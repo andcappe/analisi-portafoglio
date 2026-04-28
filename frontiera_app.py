@@ -6,7 +6,6 @@ Ottimizzazione di portafoglio alla Markowitz con visualizzazione interattiva.
 import io
 import json
 import threading
-import concurrent.futures
 import os
 import requests
 from pathlib import Path
@@ -151,17 +150,19 @@ def _make_session():
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
         'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     )})
+    # Timeout diretto sulla sessione — evita nested thread pool
+    orig_request = s.request
+    def _request_with_timeout(method, url, **kwargs):
+        kwargs.setdefault('timeout', DOWNLOAD_TIMEOUT)
+        return orig_request(method, url, **kwargs)
+    s.request = _request_with_timeout
     return s
 
-def _yf_safe(tickers, start, timeout=DOWNLOAD_TIMEOUT):
+def _yf_safe(tickers, start):
     sess = _make_session()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        f = ex.submit(yf.download, tickers, start=start,
-                      group_by='ticker', auto_adjust=True, progress=False, session=sess)
-        try:
-            return f.result(timeout=timeout)
-        except concurrent.futures.TimeoutError:
-            raise TimeoutError(f"Timeout {timeout}s")
+    return yf.download(tickers, start=start,
+                       group_by='ticker', auto_adjust=True,
+                       progress=False, session=sess)
 
 def _process_batch(bt, bd, bv, start, eurusd, eurgbp):
     prices, errors = {}, []
@@ -173,7 +174,7 @@ def _process_batch(bt, bd, bv, start, eurusd, eurgbp):
                 break
         except Exception as e:
             if attempt == 0:
-                import time; time.sleep(1)
+                import time; time.sleep(2)
             else:
                 errors.append(f"{bt[0]}: {e}")
     if raw is not None and not raw.empty:
@@ -200,7 +201,7 @@ def _download_worker(tickers, descrizione, valuta, start_date):
 
     fx = None
     try:
-        fx = _yf_safe(['EURUSD=X','EURGBP=X'], start_date, timeout=30)
+        fx = _yf_safe(['EURUSD=X','EURGBP=X'], start_date)
     except Exception:
         pass
 
