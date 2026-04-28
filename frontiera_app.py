@@ -143,22 +143,25 @@ def calc_single_portfolio(weights_dict, returns_df, rf=0.02):
 # Download dati
 # ─────────────────────────────────────────────────────────────────────────────
 def _download_single(ticker, start):
-    """Scarica prezzi Close per un singolo ticker con timeout garantito."""
+    """Scarica prezzi Close per un singolo ticker con timeout non bloccante."""
+    result = [None]
+    done   = threading.Event()
+
     def _fetch():
-        return yf.download(ticker, start=start, auto_adjust=True,
-                           progress=False, threads=False)
-    for attempt in range(2):
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                df = ex.submit(_fetch).result(timeout=DOWNLOAD_TIMEOUT)
-            if df is not None and not df.empty:
-                return df['Close'].copy()
-        except concurrent.futures.TimeoutError:
-            if attempt == 0:
-                import time; time.sleep(1)
+            result[0] = yf.download(ticker, start=start, auto_adjust=True,
+                                    progress=False, threads=False)
         except Exception:
-            if attempt == 0:
-                import time; time.sleep(2)
+            pass
+        finally:
+            done.set()
+
+    threading.Thread(target=_fetch, daemon=True).start()
+
+    if done.wait(timeout=DOWNLOAD_TIMEOUT):
+        df = result[0]
+        if df is not None and not df.empty:
+            return df['Close'].copy()
     return None
 
 def _download_worker(tickers, descrizione, valuta, start_date):

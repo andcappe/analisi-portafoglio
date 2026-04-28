@@ -163,24 +163,27 @@ _DL_LOCK   = threading.Lock()
 
 
 def _download_single(ticker, start_date):
-    """Scarica prezzi Close per un singolo ticker con timeout garantito."""
+    """Scarica prezzi Close per un singolo ticker con timeout non bloccante."""
+    result = [None]
+    done   = threading.Event()
+
     def _fetch():
-        return yf.download(ticker, start=start_date, auto_adjust=True,
-                           progress=False, threads=False)
-    for attempt in range(2):
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                df = ex.submit(_fetch).result(timeout=DOWNLOAD_TIMEOUT)
-            if df is not None and not df.empty:
-                return df['Close'].copy()
-        except concurrent.futures.TimeoutError:
-            print(f"⚠ Timeout: {ticker}")
-            if attempt == 0:
-                time.sleep(1)
+            result[0] = yf.download(ticker, start=start_date, auto_adjust=True,
+                                    progress=False, threads=False)
         except Exception as e:
-            print(f"⚠ Errore {ticker}: {e}")
-            if attempt == 0:
-                time.sleep(2)
+            print(f"⚠ {ticker}: {e}")
+        finally:
+            done.set()
+
+    threading.Thread(target=_fetch, daemon=True).start()
+
+    if done.wait(timeout=DOWNLOAD_TIMEOUT):
+        df = result[0]
+        if df is not None and not df.empty:
+            return df['Close'].copy()
+    else:
+        print(f"⚠ Timeout: {ticker}")
     return None
 
 
