@@ -615,7 +615,7 @@ def get_portfolio_analysis_tab(options_tickers):
                         ('8%',  'P1',   '#e6194b', 'Portafoglio 1'),
                         ('8%',  'P2',   '#3cb44b', 'Portafoglio 2'),
                         ('8%',  'P3',   '#4363d8', 'Portafoglio 3'),
-                        ('5%',  'AKR',  '#1a3a5c', 'AKRatio — rendimento aggiustato per il rischio'),
+                        ('5%',  'AKR',  '#1a3a5c', 'AKRatio — Extrarendimento sul benchmark per unità di rischio'),
                         ('8%',  'SH',   '#1a3a5c', 'Sharpe Ratio'),
                         ('8%',  'TV',   '#1a3a5c', 'Tracking Error Volatility'),
                         ('9%',  'DD',   '#1a3a5c', 'Draw Down'),
