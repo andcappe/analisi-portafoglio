@@ -6,6 +6,7 @@ Ottimizzazione di portafoglio alla Markowitz con visualizzazione interattiva.
 import io
 import json
 import threading
+import concurrent.futures
 import os
 import requests
 from pathlib import Path
@@ -56,7 +57,6 @@ app.index_string = '''
 # Costanti
 # ─────────────────────────────────────────────────────────────────────────────
 _XLSX           = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'TARBIUTH.xlsx')
-DOWNLOAD_BATCH  = 5
 DOWNLOAD_TIMEOUT= 40
 _DL_STATE  = {'status': 'idle', 'current': 0, 'total': 0, 'errors': []}
 _DL_BUFFER = {}
@@ -149,47 +149,27 @@ def _make_session():
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
         'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     )})
-    # Timeout diretto sulla sessione — evita nested thread pool
     orig_request = s.request
-    def _request_with_timeout(method, url, **kwargs):
+    def _req_with_timeout(method, url, **kwargs):
         kwargs.setdefault('timeout', DOWNLOAD_TIMEOUT)
         return orig_request(method, url, **kwargs)
-    s.request = _request_with_timeout
+    s.request = _req_with_timeout
     return s
 
-def _yf_safe(tickers, start):
-    sess = _make_session()
-    return yf.download(tickers, start=start,
-                       group_by='ticker', auto_adjust=True,
-                       progress=False, session=sess)
-
-def _process_batch(bt, bd, bv, start, eurusd, eurgbp):
-    prices, errors = {}, []
-    raw = None
+def _download_single(ticker, start):
+    """Scarica prezzi Close per un singolo ticker via Ticker.history()."""
+    import time as _time
     for attempt in range(2):
         try:
-            raw = _yf_safe(bt, start)
-            if raw is not None and not raw.empty:
-                break
-        except Exception as e:
+            sess = _make_session()
+            t = yf.Ticker(ticker, session=sess)
+            df = t.history(start=start, auto_adjust=True)
+            if df is not None and not df.empty:
+                return df['Close'].copy()
+        except Exception:
             if attempt == 0:
-                import time; time.sleep(2)
-            else:
-                errors.append(f"{bt[0]}: {e}")
-    if raw is not None and not raw.empty:
-        for j, t in enumerate(bt):
-            try:
-                px = raw[(t,'Close')].copy() if isinstance(raw.columns, pd.MultiIndex) \
-                     else raw['Close'].copy()
-                px = px.ffill()
-                if bv[j] == 'USD' and eurusd is not None:
-                    px = px / eurusd.reindex(px.index).ffill()
-                elif bv[j] == 'GBP' and eurgbp is not None:
-                    px = px / eurgbp.reindex(px.index).ffill()
-                prices[bd[j]] = px
-            except Exception as e2:
-                errors.append(f"{t}: {e2}")
-    return prices, errors
+                _time.sleep(2)
+    return None
 
 def _download_worker(tickers, descrizione, valuta, start_date):
     global _DL_STATE, _DL_BUFFER
@@ -198,40 +178,33 @@ def _download_worker(tickers, descrizione, valuta, start_date):
         _DL_STATE  = {'status':'running','current':0,'total':total,'errors':[]}
         _DL_BUFFER = {}
 
-    fx = None
-    try:
-        fx = _yf_safe(['EURUSD=X','EURGBP=X'], start_date)
-    except Exception:
-        pass
-
-    def _fx(name):
-        if fx is None or fx.empty: return None
-        try:
-            return fx[(name,'Close')] if isinstance(fx.columns, pd.MultiIndex) else fx['Close']
-        except: return None
-
-    eurusd = _fx('EURUSD=X')
-    eurgbp = _fx('EURGBP=X')
-
-    batches = [(tickers[i:i+DOWNLOAD_BATCH], descrizione[i:i+DOWNLOAD_BATCH],
-                valuta[i:i+DOWNLOAD_BATCH]) for i in range(0, total, DOWNLOAD_BATCH)]
+    eurusd = _download_single('EURUSD=X', start_date)
+    eurgbp = _download_single('EURGBP=X', start_date)
 
     all_prices = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
-        fmap = {ex.submit(_process_batch, bt, bd, bv, start_date, eurusd, eurgbp): len(bt)
-                for bt, bd, bv in batches}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+        fmap = {
+            ex.submit(_download_single, t, start_date): (desc, curr)
+            for t, desc, curr in zip(tickers, descrizione, valuta)
+        }
         for fut in concurrent.futures.as_completed(fmap):
-            bs = fmap[fut]
+            desc, curr = fmap[fut]
             try:
-                prices, errors = fut.result()
-                all_prices.update(prices)
-                with _DL_LOCK:
-                    _DL_STATE['errors'].extend(errors)
+                px = fut.result()
+                if px is not None:
+                    if curr == 'USD' and eurusd is not None:
+                        px = px / eurusd.reindex(px.index).ffill()
+                    elif curr == 'GBP' and eurgbp is not None:
+                        px = px / eurgbp.reindex(px.index).ffill()
+                    all_prices[desc] = px
+                else:
+                    with _DL_LOCK:
+                        _DL_STATE['errors'].append(f"{desc}: nessun dato")
             except Exception as e:
                 with _DL_LOCK:
                     _DL_STATE['errors'].append(str(e))
             with _DL_LOCK:
-                _DL_STATE['current'] = min(_DL_STATE['current'] + bs, total)
+                _DL_STATE['current'] = min(_DL_STATE['current'] + 1, total)
 
     if all_prices:
         prices_df = pd.DataFrame(all_prices)

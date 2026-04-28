@@ -182,51 +182,19 @@ def _make_yf_session():
     return s
 
 
-def _yf_download_safe(tickers, start_date, timeout=None):
-    """yf.download con sessione browser — evita blocchi su IP datacenter."""
-    session = _make_yf_session()
-    return yf.download(tickers, start=start_date,
-                       group_by='ticker', auto_adjust=True,
-                       progress=False, session=session)
-
-
-def _process_batch(batch_t, batch_d, batch_v, start_date, eurusd, eurgbp):
-    """Scarica e processa un singolo batch, restituisce (prices_dict, errors)."""
-    prices, errors = {}, []
-    raw = None
+def _download_single(ticker, start_date):
+    """Scarica prezzi Close per un singolo ticker via Ticker.history()."""
     for attempt in range(2):
         try:
-            raw = _yf_download_safe(batch_t, start_date)
-            if raw is not None and not raw.empty:
-                break
-        except Exception as e:
+            sess = _make_yf_session()
+            t = yf.Ticker(ticker, session=sess)
+            df = t.history(start=start_date, auto_adjust=True)
+            if df is not None and not df.empty:
+                return df['Close'].copy()
+        except Exception:
             if attempt == 0:
-                time.sleep(1)
-            else:
-                errors.append(f"Batch {batch_t[0]}: {e}")
-
-    if raw is not None and not raw.empty:
-        for j, t in enumerate(batch_t):
-            desc = batch_d[j]
-            curr = batch_v[j]
-            try:
-                if isinstance(raw.columns, pd.MultiIndex):
-                    if (t, 'Close') not in raw.columns:
-                        continue
-                    px = raw[(t, 'Close')].copy()
-                else:
-                    if 'Close' not in raw.columns:
-                        continue
-                    px = raw['Close'].copy()
-                px = px.ffill()
-                if curr == 'USD' and eurusd is not None:
-                    px = px / eurusd.reindex(px.index).ffill()
-                elif curr == 'GBP' and eurgbp is not None:
-                    px = px / eurgbp.reindex(px.index).ffill()
-                prices[desc] = px
-            except Exception as e2:
-                errors.append(f"{t}: {e2}")
-    return prices, errors
+                time.sleep(2)
+    return None
 
 
 def _download_worker(tickers, descrizione, valuta, start_date='2016-01-01'):
@@ -236,52 +204,33 @@ def _download_worker(tickers, descrizione, valuta, start_date='2016-01-01'):
         _DL_STATE  = {'status': 'running', 'current': 0, 'total': total, 'errors': []}
         _DL_BUFFER = {}
 
-    fx = None
-    try:
-        fx = _yf_download_safe(['EURUSD=X', 'EURGBP=X'], start_date, timeout=30)
-    except Exception as e:
-        print(f"⚠ FX download fallito: {e}")
-
-    def _fx_series(name):
-        if fx is None or fx.empty:
-            return None
-        try:
-            return fx[(name, 'Close')] if isinstance(fx.columns, pd.MultiIndex) \
-                   else fx['Close']
-        except Exception:
-            return None
-
-    eurusd = _fx_series('EURUSD=X')
-    eurgbp = _fx_series('EURGBP=X')
-
-    # Costruisce i batch
-    batches = [
-        (tickers[i:i+DOWNLOAD_BATCH_SIZE],
-         descrizione[i:i+DOWNLOAD_BATCH_SIZE],
-         valuta[i:i+DOWNLOAD_BATCH_SIZE])
-        for i in range(0, total, DOWNLOAD_BATCH_SIZE)
-    ]
+    eurusd = _download_single('EURUSD=X', start_date)
+    eurgbp = _download_single('EURGBP=X', start_date)
 
     all_prices = {}
-    # Download parallelo: 3 batch simultanei
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         future_map = {
-            executor.submit(_process_batch, bt, bd, bv, start_date, eurusd, eurgbp): len(bt)
-            for bt, bd, bv in batches
+            executor.submit(_download_single, t, start_date): (desc, curr)
+            for t, desc, curr in zip(tickers, descrizione, valuta)
         }
         for future in concurrent.futures.as_completed(future_map):
-            batch_size = future_map[future]
+            desc, curr = future_map[future]
             try:
-                prices, errors = future.result()
-                all_prices.update(prices)
-                with _DL_LOCK:
-                    _DL_STATE['errors'].extend(errors)
+                px = future.result()
+                if px is not None:
+                    if curr == 'USD' and eurusd is not None:
+                        px = px / eurusd.reindex(px.index).ffill()
+                    elif curr == 'GBP' and eurgbp is not None:
+                        px = px / eurgbp.reindex(px.index).ffill()
+                    all_prices[desc] = px
+                else:
+                    with _DL_LOCK:
+                        _DL_STATE['errors'].append(f"{desc}: nessun dato")
             except Exception as e:
                 with _DL_LOCK:
                     _DL_STATE['errors'].append(str(e))
             with _DL_LOCK:
-                _DL_STATE['current'] = min(
-                    _DL_STATE['current'] + batch_size, total)
+                _DL_STATE['current'] = min(_DL_STATE['current'] + 1, total)
 
     if all_prices:
         original_prices = pd.DataFrame(all_prices)
