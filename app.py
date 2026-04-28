@@ -85,6 +85,24 @@ _PROFILO_HTML = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__f
 def serve_profilo():
     return flask_send_file(_PROFILO_HTML)
 
+@app.server.route('/test-yf')
+def test_yf():
+    import json as _json
+    done = threading.Event()
+    result = [None]
+    def _go():
+        try:
+            df = yf.download('AAPL', start='2024-01-01', auto_adjust=True,
+                             progress=False, threads=False)
+            result[0] = {'ok': True, 'rows': len(df), 'cols': list(df.columns)}
+        except Exception as e:
+            result[0] = {'ok': False, 'error': str(e)}
+        finally:
+            done.set()
+    threading.Thread(target=_go, daemon=True).start()
+    done.wait(timeout=30)
+    return _json.dumps(result[0] or {'ok': False, 'error': 'timeout'})
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Colori
 # ─────────────────────────────────────────────────────────────────────────────
@@ -194,48 +212,68 @@ def _download_worker(tickers, descrizione, valuta, start_date='2016-01-01'):
         _DL_STATE  = {'status': 'running', 'current': 0, 'total': total, 'errors': []}
         _DL_BUFFER = {}
 
-    eurusd = _download_single('EURUSD=X', start_date)
-    eurgbp = _download_single('EURGBP=X', start_date)
-
-    all_prices = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        future_map = {
-            executor.submit(_download_single, t, start_date): (desc, curr)
-            for t, desc, curr in zip(tickers, descrizione, valuta)
-        }
-        for future in concurrent.futures.as_completed(future_map):
-            desc, curr = future_map[future]
-            try:
-                px = future.result()
-                if px is not None:
-                    if curr == 'USD' and eurusd is not None:
-                        px = px / eurusd.reindex(px.index).ffill()
-                    elif curr == 'GBP' and eurgbp is not None:
-                        px = px / eurgbp.reindex(px.index).ffill()
-                    all_prices[desc] = px
-                else:
+    try:
+        # FX in parallelo con i ticker principali
+        raw = {}   # desc -> (px, curr)
+        all_items = (
+            [('EURUSD=X', '__eurusd__', None), ('EURGBP=X', '__eurgbp__', None)]
+            + list(zip(tickers, descrizione, valuta))
+        )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            future_map = {
+                executor.submit(_download_single, t, start_date): (desc, curr)
+                for t, desc, curr in all_items
+            }
+            for future in concurrent.futures.as_completed(future_map):
+                desc, curr = future_map[future]
+                try:
+                    px = future.result()
+                except Exception as e:
+                    px = None
                     with _DL_LOCK:
-                        _DL_STATE['errors'].append(f"{desc}: nessun dato")
-            except Exception as e:
-                with _DL_LOCK:
-                    _DL_STATE['errors'].append(str(e))
-            with _DL_LOCK:
-                _DL_STATE['current'] = min(_DL_STATE['current'] + 1, total)
+                        _DL_STATE['errors'].append(str(e))
+                if desc not in ('__eurusd__', '__eurgbp__'):
+                    raw[desc] = (px, curr)
+                    with _DL_LOCK:
+                        _DL_STATE['current'] = min(_DL_STATE['current'] + 1, total)
+                else:
+                    raw[desc] = px
 
-    if all_prices:
-        original_prices = pd.DataFrame(all_prices)
-        original_prices.index = pd.to_datetime(original_prices.index)
-        original_prices = original_prices.ffill()
-        close_returns = original_prices.pct_change(fill_method=None)
-        with _DL_LOCK:
-            _DL_BUFFER['original_prices'] = original_prices
-            _DL_BUFFER['close_returns']   = close_returns
-            _DL_STATE['status'] = 'done'
-        print(f"✓ Download completato: {len(all_prices)} asset")
-    else:
+        eurusd = raw.get('__eurusd__')
+        eurgbp = raw.get('__eurgbp__')
+
+        all_prices = {}
+        for desc, (px, curr) in ((k, v) for k, v in raw.items()
+                                 if k not in ('__eurusd__', '__eurgbp__')):
+            if px is None:
+                with _DL_LOCK:
+                    _DL_STATE['errors'].append(f"{desc}: nessun dato")
+                continue
+            if curr == 'USD' and eurusd is not None:
+                px = px / eurusd.reindex(px.index).ffill()
+            elif curr == 'GBP' and eurgbp is not None:
+                px = px / eurgbp.reindex(px.index).ffill()
+            all_prices[desc] = px
+
+        if all_prices:
+            original_prices = pd.DataFrame(all_prices)
+            original_prices.index = pd.to_datetime(original_prices.index)
+            original_prices = original_prices.ffill()
+            close_returns = original_prices.pct_change(fill_method=None)
+            with _DL_LOCK:
+                _DL_BUFFER['original_prices'] = original_prices
+                _DL_BUFFER['close_returns']   = close_returns
+                _DL_STATE['status'] = 'done'
+            print(f"✓ Download completato: {len(all_prices)} asset")
+        else:
+            with _DL_LOCK:
+                _DL_STATE['status'] = 'error'
+            print("❌ Download fallito: nessun dato disponibile")
+
+    except Exception as e:
+        print(f"❌ Download worker crash: {e}")
         with _DL_LOCK:
             _DL_STATE['status'] = 'error'
-        print("❌ Download fallito: nessun dato disponibile")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

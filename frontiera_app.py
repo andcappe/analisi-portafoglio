@@ -171,44 +171,63 @@ def _download_worker(tickers, descrizione, valuta, start_date):
         _DL_STATE  = {'status':'running','current':0,'total':total,'errors':[]}
         _DL_BUFFER = {}
 
-    eurusd = _download_single('EURUSD=X', start_date)
-    eurgbp = _download_single('EURGBP=X', start_date)
-
-    all_prices = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
-        fmap = {
-            ex.submit(_download_single, t, start_date): (desc, curr)
-            for t, desc, curr in zip(tickers, descrizione, valuta)
-        }
-        for fut in concurrent.futures.as_completed(fmap):
-            desc, curr = fmap[fut]
-            try:
-                px = fut.result()
-                if px is not None:
-                    if curr == 'USD' and eurusd is not None:
-                        px = px / eurusd.reindex(px.index).ffill()
-                    elif curr == 'GBP' and eurgbp is not None:
-                        px = px / eurgbp.reindex(px.index).ffill()
-                    all_prices[desc] = px
-                else:
+    try:
+        all_items = (
+            [('EURUSD=X', '__eurusd__', None), ('EURGBP=X', '__eurgbp__', None)]
+            + list(zip(tickers, descrizione, valuta))
+        )
+        raw = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+            fmap = {
+                ex.submit(_download_single, t, start_date): (desc, curr)
+                for t, desc, curr in all_items
+            }
+            for fut in concurrent.futures.as_completed(fmap):
+                desc, curr = fmap[fut]
+                try:
+                    px = fut.result()
+                except Exception as e:
+                    px = None
                     with _DL_LOCK:
-                        _DL_STATE['errors'].append(f"{desc}: nessun dato")
-            except Exception as e:
-                with _DL_LOCK:
-                    _DL_STATE['errors'].append(str(e))
-            with _DL_LOCK:
-                _DL_STATE['current'] = min(_DL_STATE['current'] + 1, total)
+                        _DL_STATE['errors'].append(str(e))
+                if desc not in ('__eurusd__', '__eurgbp__'):
+                    raw[desc] = (px, curr)
+                    with _DL_LOCK:
+                        _DL_STATE['current'] = min(_DL_STATE['current'] + 1, total)
+                else:
+                    raw[desc] = px
 
-    if all_prices:
-        prices_df = pd.DataFrame(all_prices)
-        prices_df.index = pd.to_datetime(prices_df.index)
-        prices_df = prices_df.ffill()
-        returns_df = prices_df.pct_change(fill_method=None)
-        with _DL_LOCK:
-            _DL_BUFFER['prices']  = prices_df
-            _DL_BUFFER['returns'] = returns_df
-            _DL_STATE['status']   = 'done'
-    else:
+        eurusd = raw.get('__eurusd__')
+        eurgbp = raw.get('__eurgbp__')
+
+        all_prices = {}
+        for desc, (px, curr) in ((k, v) for k, v in raw.items()
+                                 if k not in ('__eurusd__', '__eurgbp__')):
+            if px is None:
+                with _DL_LOCK:
+                    _DL_STATE['errors'].append(f"{desc}: nessun dato")
+                continue
+            if curr == 'USD' and eurusd is not None:
+                px = px / eurusd.reindex(px.index).ffill()
+            elif curr == 'GBP' and eurgbp is not None:
+                px = px / eurgbp.reindex(px.index).ffill()
+            all_prices[desc] = px
+
+        if all_prices:
+            prices_df = pd.DataFrame(all_prices)
+            prices_df.index = pd.to_datetime(prices_df.index)
+            prices_df = prices_df.ffill()
+            returns_df = prices_df.pct_change(fill_method=None)
+            with _DL_LOCK:
+                _DL_BUFFER['prices']  = prices_df
+                _DL_BUFFER['returns'] = returns_df
+                _DL_STATE['status']   = 'done'
+        else:
+            with _DL_LOCK:
+                _DL_STATE['status'] = 'error'
+
+    except Exception as e:
+        print(f"❌ Download worker crash: {e}")
         with _DL_LOCK:
             _DL_STATE['status'] = 'error'
 
