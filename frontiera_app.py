@@ -30,8 +30,7 @@ _BASE = '/frontiera-efficiente/'
 app  = Dash(__name__,
             suppress_callback_exceptions=True,
             external_stylesheets=_EXT,
-            url_base_pathname=_BASE,
-            requests_pathname_prefix=_BASE)
+            url_base_pathname=_BASE)
 app.server.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024
 
 app.index_string = '''
