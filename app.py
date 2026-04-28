@@ -199,7 +199,10 @@ def _download_single(ticker, start_date):
     if done.wait(timeout=DOWNLOAD_TIMEOUT):
         df = result[0]
         if df is not None and not df.empty:
-            return df['Close'].copy()
+            close = df['Close']
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+            return close.dropna().copy()
     else:
         print(f"⚠ Timeout: {ticker}")
     return None
