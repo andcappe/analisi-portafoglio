@@ -8,7 +8,6 @@ import json
 import threading
 import concurrent.futures
 import os
-import requests
 from pathlib import Path
 
 import numpy as np
@@ -143,32 +142,23 @@ def calc_single_portfolio(weights_dict, returns_df, rf=0.02):
 # ─────────────────────────────────────────────────────────────────────────────
 # Download dati
 # ─────────────────────────────────────────────────────────────────────────────
-def _make_session():
-    s = requests.Session()
-    s.headers.update({'User-Agent': (
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-        'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
-    )})
-    orig_request = s.request
-    def _req_with_timeout(method, url, **kwargs):
-        kwargs.setdefault('timeout', DOWNLOAD_TIMEOUT)
-        return orig_request(method, url, **kwargs)
-    s.request = _req_with_timeout
-    return s
-
 def _download_single(ticker, start):
-    """Scarica prezzi Close per un singolo ticker via Ticker.history()."""
-    import time as _time
+    """Scarica prezzi Close per un singolo ticker con timeout garantito."""
+    def _fetch():
+        return yf.download(ticker, start=start, auto_adjust=True,
+                           progress=False, threads=False)
     for attempt in range(2):
         try:
-            sess = _make_session()
-            t = yf.Ticker(ticker, session=sess)
-            df = t.history(start=start, auto_adjust=True)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                df = ex.submit(_fetch).result(timeout=DOWNLOAD_TIMEOUT)
             if df is not None and not df.empty:
                 return df['Close'].copy()
+        except concurrent.futures.TimeoutError:
+            if attempt == 0:
+                import time; time.sleep(1)
         except Exception:
             if attempt == 0:
-                _time.sleep(2)
+                import time; time.sleep(2)
     return None
 
 def _download_worker(tickers, descrizione, valuta, start_date):

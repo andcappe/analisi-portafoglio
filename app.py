@@ -162,36 +162,23 @@ _DL_BUFFER = {}
 _DL_LOCK   = threading.Lock()
 
 
-def _make_yf_session():
-    """Sessione requests con user-agent da browser e timeout integrato."""
-    s = requests.Session()
-    s.headers.update({
-        'User-Agent': (
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
-            'AppleWebKit/537.36 (KHTML, like Gecko) '
-            'Chrome/124.0.0.0 Safari/537.36'
-        ),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-    })
-    orig_request = s.request
-    def _req_with_timeout(method, url, **kwargs):
-        kwargs.setdefault('timeout', DOWNLOAD_TIMEOUT)
-        return orig_request(method, url, **kwargs)
-    s.request = _req_with_timeout
-    return s
-
-
 def _download_single(ticker, start_date):
-    """Scarica prezzi Close per un singolo ticker via Ticker.history()."""
+    """Scarica prezzi Close per un singolo ticker con timeout garantito."""
+    def _fetch():
+        return yf.download(ticker, start=start_date, auto_adjust=True,
+                           progress=False, threads=False)
     for attempt in range(2):
         try:
-            sess = _make_yf_session()
-            t = yf.Ticker(ticker, session=sess)
-            df = t.history(start=start_date, auto_adjust=True)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                df = ex.submit(_fetch).result(timeout=DOWNLOAD_TIMEOUT)
             if df is not None and not df.empty:
                 return df['Close'].copy()
-        except Exception:
+        except concurrent.futures.TimeoutError:
+            print(f"⚠ Timeout: {ticker}")
+            if attempt == 0:
+                time.sleep(1)
+        except Exception as e:
+            print(f"⚠ Errore {ticker}: {e}")
             if attempt == 0:
                 time.sleep(2)
     return None
