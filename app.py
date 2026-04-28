@@ -11,6 +11,7 @@ import threading
 import os
 import uuid
 import concurrent.futures
+import requests
 from pathlib import Path
 from datetime import datetime
 
@@ -161,15 +162,72 @@ _DL_BUFFER = {}
 _DL_LOCK   = threading.Lock()
 
 
+def _make_yf_session():
+    """Sessione requests con user-agent da browser per evitare throttling Yahoo."""
+    import requests
+    s = requests.Session()
+    s.headers.update({
+        'User-Agent': (
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/124.0.0.0 Safari/537.36'
+        ),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+    })
+    return s
+
+
 def _yf_download_safe(tickers, start_date, timeout=DOWNLOAD_TIMEOUT):
-    """yf.download con timeout — evita blocchi infiniti su IP da datacenter."""
+    """yf.download con timeout e sessione browser — evita blocchi su IP datacenter."""
+    session = _make_yf_session()
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
         future = ex.submit(yf.download, tickers, start=start_date,
-                           group_by='ticker', auto_adjust=True, progress=False)
+                           group_by='ticker', auto_adjust=True,
+                           progress=False, session=session)
         try:
             return future.result(timeout=timeout)
         except concurrent.futures.TimeoutError:
             raise TimeoutError(f"Timeout dopo {timeout}s")
+
+
+def _process_batch(batch_t, batch_d, batch_v, start_date, eurusd, eurgbp):
+    """Scarica e processa un singolo batch, restituisce (prices_dict, errors)."""
+    prices, errors = {}, []
+    raw = None
+    for attempt in range(2):
+        try:
+            raw = _yf_download_safe(batch_t, start_date)
+            if raw is not None and not raw.empty:
+                break
+        except Exception as e:
+            if attempt == 0:
+                time.sleep(1)
+            else:
+                errors.append(f"Batch {batch_t[0]}: {e}")
+
+    if raw is not None and not raw.empty:
+        for j, t in enumerate(batch_t):
+            desc = batch_d[j]
+            curr = batch_v[j]
+            try:
+                if isinstance(raw.columns, pd.MultiIndex):
+                    if (t, 'Close') not in raw.columns:
+                        continue
+                    px = raw[(t, 'Close')].copy()
+                else:
+                    if 'Close' not in raw.columns:
+                        continue
+                    px = raw['Close'].copy()
+                px = px.ffill()
+                if curr == 'USD' and eurusd is not None:
+                    px = px / eurusd.reindex(px.index).ffill()
+                elif curr == 'GBP' and eurgbp is not None:
+                    px = px / eurgbp.reindex(px.index).ffill()
+                prices[desc] = px
+            except Exception as e2:
+                errors.append(f"{t}: {e2}")
+    return prices, errors
 
 
 def _download_worker(tickers, descrizione, valuta, start_date='2016-01-01'):
@@ -196,57 +254,35 @@ def _download_worker(tickers, descrizione, valuta, start_date='2016-01-01'):
 
     eurusd = _fx_series('EURUSD=X')
     eurgbp = _fx_series('EURGBP=X')
+
+    # Costruisce i batch
+    batches = [
+        (tickers[i:i+DOWNLOAD_BATCH_SIZE],
+         descrizione[i:i+DOWNLOAD_BATCH_SIZE],
+         valuta[i:i+DOWNLOAD_BATCH_SIZE])
+        for i in range(0, total, DOWNLOAD_BATCH_SIZE)
+    ]
+
     all_prices = {}
-
-    for batch_start in range(0, total, DOWNLOAD_BATCH_SIZE):
-        batch_t = tickers[batch_start: batch_start + DOWNLOAD_BATCH_SIZE]
-        batch_d = descrizione[batch_start: batch_start + DOWNLOAD_BATCH_SIZE]
-        batch_v = valuta[batch_start: batch_start + DOWNLOAD_BATCH_SIZE]
-
-        raw = None
-        for attempt in range(2):   # 1 retry
+    # Download parallelo: 3 batch simultanei
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        future_map = {
+            executor.submit(_process_batch, bt, bd, bv, start_date, eurusd, eurgbp): len(bt)
+            for bt, bd, bv in batches
+        }
+        for future in concurrent.futures.as_completed(future_map):
+            batch_size = future_map[future]
             try:
-                raw = _yf_download_safe(batch_t, start_date)
-                if raw is not None and not raw.empty:
-                    break
+                prices, errors = future.result()
+                all_prices.update(prices)
+                with _DL_LOCK:
+                    _DL_STATE['errors'].extend(errors)
             except Exception as e:
-                err_msg = f"Batch {batch_start} tentativo {attempt+1}: {e}"
-                print(f"⚠ {err_msg}")
-                if attempt == 0:
-                    time.sleep(2)
-                else:
-                    with _DL_LOCK:
-                        _DL_STATE['errors'].append(err_msg)
-
-        if raw is not None and not raw.empty:
-            for j, t in enumerate(batch_t):
-                desc = batch_d[j]
-                curr = batch_v[j]
-                try:
-                    if isinstance(raw.columns, pd.MultiIndex):
-                        if (t, 'Close') not in raw.columns:
-                            continue
-                        px = raw[(t, 'Close')].copy()
-                    else:
-                        if 'Close' not in raw.columns:
-                            continue
-                        px = raw['Close'].copy()
-
-                    px = px.ffill()
-                    if curr == 'USD' and eurusd is not None:
-                        px = px / eurusd.reindex(px.index).ffill()
-                    elif curr == 'GBP' and eurgbp is not None:
-                        px = px / eurgbp.reindex(px.index).ffill()
-                    all_prices[desc] = px
-
-                except Exception as e2:
-                    with _DL_LOCK:
-                        _DL_STATE['errors'].append(f"{t}: {e2}")
-
-        with _DL_LOCK:
-            _DL_STATE['current'] = min(batch_start + DOWNLOAD_BATCH_SIZE, total)
-
-        time.sleep(0.5)
+                with _DL_LOCK:
+                    _DL_STATE['errors'].append(str(e))
+            with _DL_LOCK:
+                _DL_STATE['current'] = min(
+                    _DL_STATE['current'] + batch_size, total)
 
     if all_prices:
         original_prices = pd.DataFrame(all_prices)
