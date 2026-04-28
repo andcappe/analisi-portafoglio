@@ -563,27 +563,29 @@ def get_portfolio_analysis_tab(options_tickers):
             html.Div([
                 # Sx 35%: etichette colonne — speculari alle colonne della griglia
                 html.Div([
-                    html.Div('Asset', style={
+                    html.Div('Asset', **{'data-tooltip': 'Nome dell\'asset'}, style={
                         'width': '14%', 'font-weight': 'bold', 'font-size': '8px',
                         'padding-left': '5px', 'color': '#1a3a5c',
                         'display': 'flex', 'align-items': 'center',
+                        'position': 'relative', 'cursor': 'default',
                     }),
-                    *[html.Div(lbl, style={
+                    *[html.Div(lbl, **{'data-tooltip': tip}, style={
                         'width': w, 'text-align': 'center', 'font-weight': 'bold',
                         'font-size': '8px', 'color': col,
                         'display': 'flex', 'align-items': 'center', 'justify-content': 'center',
-                    }) for w, lbl, col in [
-                        ('4%',  'CH',  '#1a3a5c'),
-                        ('8%',  'P1',  '#e6194b'),
-                        ('8%',  'P2',  '#3cb44b'),
-                        ('8%',  'P3',  '#4363d8'),
-                        ('5%',  'AKR', '#1a3a5c'),
-                        ('8%',  'SH',  '#1a3a5c'),
-                        ('8%',  'TV',  '#1a3a5c'),
-                        ('9%',  'DD',  '#1a3a5c'),
-                        ('9%',  'VOL', '#1a3a5c'),
-                        ('9%',  'VA90','#1a3a5c'),
-                        ('10%', 'VA95','#1a3a5c'),
+                        'position': 'relative', 'cursor': 'default',
+                    }) for w, lbl, col, tip in [
+                        ('4%',  'CH',   '#1a3a5c', 'Grafici degli asset'),
+                        ('8%',  'P1',   '#e6194b', 'Portafoglio 1'),
+                        ('8%',  'P2',   '#3cb44b', 'Portafoglio 2'),
+                        ('8%',  'P3',   '#4363d8', 'Portafoglio 3'),
+                        ('5%',  'AKR',  '#1a3a5c', 'AKRatio — rendimento aggiustato per il rischio'),
+                        ('8%',  'SH',   '#1a3a5c', 'Sharpe Ratio'),
+                        ('8%',  'TV',   '#1a3a5c', 'Tracking Error Volatility'),
+                        ('9%',  'DD',   '#1a3a5c', 'Draw Down'),
+                        ('9%',  'VOL',  '#1a3a5c', 'Deviazione Standard'),
+                        ('9%',  'VA90', '#1a3a5c', 'Value at Risk 90%'),
+                        ('10%', 'VA95', '#1a3a5c', 'Value at Risk 95%'),
                     ]],
                 ], style={
                     'width': '35%', 'display': 'flex', 'align-items': 'center',
