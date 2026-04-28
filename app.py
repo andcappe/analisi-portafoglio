@@ -163,8 +163,7 @@ _DL_LOCK   = threading.Lock()
 
 
 def _make_yf_session():
-    """Sessione requests con user-agent da browser per evitare throttling Yahoo."""
-    import requests
+    """Sessione requests con user-agent da browser e timeout integrato."""
     s = requests.Session()
     s.headers.update({
         'User-Agent': (
@@ -175,20 +174,20 @@ def _make_yf_session():
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5',
     })
+    orig_request = s.request
+    def _req_with_timeout(method, url, **kwargs):
+        kwargs.setdefault('timeout', DOWNLOAD_TIMEOUT)
+        return orig_request(method, url, **kwargs)
+    s.request = _req_with_timeout
     return s
 
 
-def _yf_download_safe(tickers, start_date, timeout=DOWNLOAD_TIMEOUT):
-    """yf.download con timeout e sessione browser — evita blocchi su IP datacenter."""
+def _yf_download_safe(tickers, start_date, timeout=None):
+    """yf.download con sessione browser — evita blocchi su IP datacenter."""
     session = _make_yf_session()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        future = ex.submit(yf.download, tickers, start=start_date,
-                           group_by='ticker', auto_adjust=True,
-                           progress=False, session=session)
-        try:
-            return future.result(timeout=timeout)
-        except concurrent.futures.TimeoutError:
-            raise TimeoutError(f"Timeout dopo {timeout}s")
+    return yf.download(tickers, start=start_date,
+                       group_by='ticker', auto_adjust=True,
+                       progress=False, session=session)
 
 
 def _process_batch(batch_t, batch_d, batch_v, start_date, eurusd, eurgbp):
