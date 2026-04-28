@@ -10,6 +10,7 @@ import time
 import threading
 import os
 import uuid
+import concurrent.futures
 from pathlib import Path
 from datetime import datetime
 
@@ -152,11 +153,23 @@ def _get_df(json_str):
 # ─────────────────────────────────────────────────────────────────────────────
 # Download worker (background thread)
 # ─────────────────────────────────────────────────────────────────────────────
-DOWNLOAD_BATCH_SIZE = 10
+DOWNLOAD_BATCH_SIZE = 5
+DOWNLOAD_TIMEOUT    = 40   # secondi max per batch
 
 _DL_STATE  = {'status': 'idle', 'current': 0, 'total': 0, 'errors': []}
 _DL_BUFFER = {}
 _DL_LOCK   = threading.Lock()
+
+
+def _yf_download_safe(tickers, start_date, timeout=DOWNLOAD_TIMEOUT):
+    """yf.download con timeout — evita blocchi infiniti su IP da datacenter."""
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+        future = ex.submit(yf.download, tickers, start=start_date,
+                           group_by='ticker', auto_adjust=True, progress=False)
+        try:
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            raise TimeoutError(f"Timeout dopo {timeout}s")
 
 
 def _download_worker(tickers, descrizione, valuta, start_date='2016-01-01'):
@@ -168,8 +181,7 @@ def _download_worker(tickers, descrizione, valuta, start_date='2016-01-01'):
 
     fx = None
     try:
-        fx = yf.download(['EURUSD=X', 'EURGBP=X'], start=start_date,
-                         group_by='ticker', auto_adjust=True, progress=False)
+        fx = _yf_download_safe(['EURUSD=X', 'EURGBP=X'], start_date, timeout=30)
     except Exception as e:
         print(f"⚠ FX download fallito: {e}")
 
@@ -191,12 +203,22 @@ def _download_worker(tickers, descrizione, valuta, start_date='2016-01-01'):
         batch_d = descrizione[batch_start: batch_start + DOWNLOAD_BATCH_SIZE]
         batch_v = valuta[batch_start: batch_start + DOWNLOAD_BATCH_SIZE]
 
-        try:
-            raw = yf.download(batch_t, start=start_date, group_by='ticker',
-                              auto_adjust=True, progress=False)
-            if raw.empty:
-                raise ValueError("Risposta vuota da Yahoo")
+        raw = None
+        for attempt in range(2):   # 1 retry
+            try:
+                raw = _yf_download_safe(batch_t, start_date)
+                if raw is not None and not raw.empty:
+                    break
+            except Exception as e:
+                err_msg = f"Batch {batch_start} tentativo {attempt+1}: {e}"
+                print(f"⚠ {err_msg}")
+                if attempt == 0:
+                    time.sleep(2)
+                else:
+                    with _DL_LOCK:
+                        _DL_STATE['errors'].append(err_msg)
 
+        if raw is not None and not raw.empty:
             for j, t in enumerate(batch_t):
                 desc = batch_d[j]
                 curr = batch_v[j]
@@ -221,14 +243,10 @@ def _download_worker(tickers, descrizione, valuta, start_date='2016-01-01'):
                     with _DL_LOCK:
                         _DL_STATE['errors'].append(f"{t}: {e2}")
 
-        except Exception as e:
-            with _DL_LOCK:
-                _DL_STATE['errors'].append(f"Batch {batch_start}: {e}")
-
         with _DL_LOCK:
             _DL_STATE['current'] = min(batch_start + DOWNLOAD_BATCH_SIZE, total)
 
-        time.sleep(0.3)
+        time.sleep(0.5)
 
     if all_prices:
         original_prices = pd.DataFrame(all_prices)
@@ -507,10 +525,11 @@ def get_portfolio_analysis_tab(options_tickers):
                                   placeholder='30', style={'width': '55px', 'font-size': '11px'}),
                     ], style={'display': 'flex', 'align-items': 'center', 'margin-right': '12px'}),
                     html.Button('Update', id='update-portfolio-button', n_clicks=0,
-                                style={'background-color': '#28a745', 'color': 'white',
+                                style={'background-color': '#c0392b', 'color': 'white',
                                        'border': 'none', 'padding': '5px 14px',
                                        'border-radius': '4px', 'cursor': 'pointer',
-                                       'font-weight': 'bold', 'font-size': '11px'}),
+                                       'font-weight': 'bold', 'font-size': '11px',
+                                       'box-shadow': '0 2px 6px rgba(192,57,43,0.4)'}),
                     html.Div([
                         html.Label('Filtro AKRatio:',
                                    style={'font-size': '10px', 'font-weight': 'bold',
@@ -588,6 +607,14 @@ def get_portfolio_analysis_tab(options_tickers):
                     html.Div(id='asset-count-display',
                              style={'font-size': '10px', 'color': '#555',
                                     'padding': '3px 5px 5px 5px', 'margin-bottom': '2px'}),
+                    html.Div(
+                        '▶ Dati caricati — clicca UPDATE per aggiornare i grafici',
+                        id='update-hint',
+                        style={'display': 'none', 'font-size': '9px', 'color': '#c0392b',
+                               'font-weight': '600', 'padding': '2px 5px 4px 5px',
+                               'background': '#fdf2f0', 'border-left': '3px solid #c0392b',
+                               'margin-bottom': '4px', 'border-radius': '0 4px 4px 0'}
+                    ),
                     html.Div(id='weights-grid-container', style={'display': 'block'}),
                     html.Div([
                         html.Hr(style={'margin': '10px 0'}),
@@ -679,16 +706,16 @@ def _navbar():
                 'border': '1px solid rgba(243,112,33,0.3)',
                 'padding': '3px 8px', 'borderRadius': '4px',
             }),
-        ], href='/sito', style={'textDecoration': 'none', 'display': 'flex',
-                                'alignItems': 'center'}),
+        ], href='https://andcappe.github.io', target='_blank',
+           style={'textDecoration': 'none', 'display': 'flex', 'alignItems': 'center'}),
 
         # Link di navigazione
         html.Ul([
-            html.Li(html.A('Chi Sono',     href='/sito#chi-sono',   style=link_style)),
-            html.Li(html.A('Esperienza',   href='/sito#esperienza', style=link_style)),
-            html.Li(html.A('Strumenti',    href='/sito#dashboard',  style=link_style)),
-            html.Li(html.A('Prenota Call', href='/sito#prenota',    style=link_style)),
-            html.Li(html.A('Contatti',     href='/sito#contatti',   style=link_style)),
+            html.Li(html.A('Chi Sono',     href='https://andcappe.github.io#chi-sono',   target='_blank', style=link_style)),
+            html.Li(html.A('Esperienza',   href='https://andcappe.github.io#esperienza', target='_blank', style=link_style)),
+            html.Li(html.A('Strumenti',    href='https://andcappe.github.io#dashboard',  target='_blank', style=link_style)),
+            html.Li(html.A('Prenota Call', href='https://andcappe.github.io#prenota',    target='_blank', style=link_style)),
+            html.Li(html.A('Contatti',     href='https://andcappe.github.io#contatti',   target='_blank', style=link_style)),
         ], style={'display': 'flex', 'gap': '2rem', 'listStyle': 'none',
                   'margin': '0', 'padding': '0', 'alignItems': 'center'}),
 
@@ -696,7 +723,7 @@ def _navbar():
         html.A([
             html.I(className='fa-regular fa-calendar', style={'marginRight': '7px'}),
             'Prenota call',
-        ], href='/sito#prenota', style={
+        ], href='https://andcappe.github.io#prenota', target='_blank', style={
             'padding': '9px 20px',
             'background': '#1a3a6b', 'color': 'white',
             'borderRadius': '7px', 'fontSize': '0.8rem', 'fontWeight': '700',
@@ -1118,13 +1145,36 @@ def update_benchmark_options(options_tickers, current_value):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Callback: mostra/nascondi hint Update
+# ─────────────────────────────────────────────────────────────────────────────
+@app.callback(
+    Output('update-hint', 'style'),
+    Input('data-loaded-flag',        'data'),
+    Input('update-portfolio-button', 'n_clicks'),
+)
+def toggle_update_hint(data_loaded, update_clicks):
+    _shown  = {'display': 'block', 'font-size': '9px', 'color': '#c0392b',
+                'font-weight': '600', 'padding': '2px 5px 4px 5px',
+                'background': '#fdf2f0', 'border-left': '3px solid #c0392b',
+                'margin-bottom': '4px', 'border-radius': '0 4px 4px 0'}
+    _hidden = {**_shown, 'display': 'none'}
+    ctx = callback_context
+    triggered = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else ''
+    if triggered == 'update-portfolio-button' and update_clicks:
+        return _hidden
+    if triggered == 'data-loaded-flag' and data_loaded:
+        return _shown
+    return _hidden
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Callback: griglia pesi e asset
 # ─────────────────────────────────────────────────────────────────────────────
 @app.callback(
     Output('weights-grid-container', 'children'),
     Output('asset-count-display',    'children'),
     Input('update-portfolio-button', 'n_clicks'),
-    Input('data-loaded-flag',        'data'),
+    State('data-loaded-flag',        'data'),
     State('stock-data',    'data'),
     State('asset-checklist', 'data'),
     State({'type': 'graph-select-checkbox',  'index': ALL}, 'value'),
@@ -1152,10 +1202,7 @@ def generate_asset_and_weight_inputs(update_clicks, data_loaded_flag, stock_data
         'Carica i dati per visualizzare gli asset',
         style={'color': '#888', 'font-style': 'italic', 'font-size': '11px', 'padding': '12px 8px'}
     )
-    ctx = callback_context
-    triggered = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else ''
-    auto = (triggered == 'data-loaded-flag' and data_loaded_flag)
-    if not auto and not update_clicks:
+    if not update_clicks:
         return [_placeholder], ''
     if not stock_data_json or not options_tickers:
         return [_placeholder], ''
@@ -1519,9 +1566,9 @@ def sync_date_range(stock_data, start_date, end_date):
     Input('update-portfolio-button', 'n_clicks'),
     Input('delete-column-button',    'n_clicks'),
     Input('controls-and-graph',      'clickData'),
-    Input('tab1-slider-store',       'data'),
-    Input('global-assets-selected',  'data'),
 
+    State('tab1-slider-store',       'data'),
+    State('global-assets-selected',  'data'),
     State('benchmark-selector',      'value'),
     State('ir-window-input',         'value'),
     State('weights-store-P1',        'data'),
@@ -1554,12 +1601,8 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
 
     triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
 
-    if triggered_id in ('tab1-slider-store', 'global-assets-selected'):
-        if not stock_data or not selected_assets:
-            raise PreventUpdate
-    else:
-        if not update_clicks and not delete_clicks and not clickData:
-            raise PreventUpdate
+    if not update_clicks and not delete_clicks and not clickData:
+        raise PreventUpdate
 
     if not stock_data:
         return {}, 'Nessun dato caricato', ''
