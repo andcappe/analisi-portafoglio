@@ -26,11 +26,11 @@ _EXT = [
     'https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=Inter:wght@400;600;700&display=swap',
     'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css',
 ]
-_BASE = '/frontiera-efficiente/'
 app  = Dash(__name__,
             suppress_callback_exceptions=True,
             external_stylesheets=_EXT,
-            url_base_pathname=_BASE)
+            requests_pathname_prefix='/frontiera-efficiente/',
+            routes_pathname_prefix='/')
 app.server.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024
 
 app.index_string = '''
