@@ -111,18 +111,14 @@ def calc_frontier(returns_df, n=20, wmin=0.0, wmax=1.0, rf=0.02, risk='vol'):
                              'Sharpe':(ret-rf)/v if v>0 else 0,'Weights':r.x})
 
     df_f = pd.DataFrame(rows)
-    # Max Sharpe sulla frontiera
     if not df_f.empty:
-        idx_ms = df_f['Sharpe'].idxmax()
+        idx_ms   = df_f['Sharpe'].idxmax()
         max_sharpe = df_f.loc[idx_ms]
+        idx_mv   = df_f['Volatility'].idxmin()
+        min_vol  = df_f.loc[idx_mv]
     else:
         max_sharpe = None
-    # Min vol/var
-    if not df_f.empty:
-        idx_mv = df_f['Volatility'].idxmin()
-        min_vol = df_f.loc[idx_mv]
-    else:
-        min_vol = None
+        min_vol    = None
 
     return df_f, max_sharpe, min_vol, returns_df.columns.tolist()
 
@@ -143,7 +139,6 @@ def calc_single_portfolio(weights_dict, returns_df, rf=0.02):
 # Download dati
 # ─────────────────────────────────────────────────────────────────────────────
 def _download_single(ticker, start):
-    """Scarica prezzi Close per un singolo ticker con timeout non bloccante."""
     result = [None]
     done   = threading.Event()
 
@@ -359,78 +354,67 @@ app.layout = html.Div([
                   'borderBottom':'1px solid #ccd9ee','display':'flex',
                   'alignItems':'center','flexWrap':'wrap','gap':'8px'}),
 
-        # ── Intestazione colonne ─────────────────────────────────────────────
+        # ── Barra controlli calcolo ───────────────────────────────────────────
         html.Div([
             html.Div([
-                html.Div('Asset', style={'width':'50%','fontWeight':'bold','fontSize':'8px',
-                                         'paddingLeft':'5px','color':'#1a3a5c'}),
-                html.Div('P1 %', **{'data-tooltip':'Peso Portafoglio 1'},
-                         style={'width':'25%','textAlign':'center','fontWeight':'bold',
-                                'fontSize':'8px','color':'#e6194b','position':'relative','cursor':'default'}),
-                html.Div('P2 %', **{'data-tooltip':'Peso Portafoglio 2'},
-                         style={'width':'25%','textAlign':'center','fontWeight':'bold',
-                                'fontSize':'8px','color':'#3cb44b','position':'relative','cursor':'default'}),
-            ], style={'width':'35%','display':'flex','alignItems':'center','minHeight':'28px'}),
+                html.Label('N. Port:', style={'fontSize':'10px','marginRight':'4px'}),
+                dcc.Input(id='fe-n-portfolios', type='number', value=15, min=5, max=100,
+                          style={'width':'50px','fontSize':'10px'}),
+            ], style={'display':'flex','alignItems':'center','marginRight':'12px'}),
             html.Div([
-                html.Div([
-                    html.Label('N. Port:', style={'fontSize':'10px','marginRight':'4px'}),
-                    dcc.Input(id='fe-n-portfolios', type='number', value=15, min=5, max=100,
-                              style={'width':'50px','fontSize':'10px'}),
-                ], style={'display':'flex','alignItems':'center','marginRight':'12px'}),
-                html.Div([
-                    html.Label('Min %:', style={'fontSize':'10px','marginRight':'4px'}),
-                    dcc.Input(id='fe-min-weight', type='number', value=0, min=0, max=100,
-                              style={'width':'45px','fontSize':'10px'}),
-                ], style={'display':'flex','alignItems':'center','marginRight':'12px'}),
-                html.Div([
-                    html.Label('Max %:', style={'fontSize':'10px','marginRight':'4px'}),
-                    dcc.Input(id='fe-max-weight', type='number', value=100, min=0, max=100,
-                              style={'width':'45px','fontSize':'10px'}),
-                ], style={'display':'flex','alignItems':'center','marginRight':'12px'}),
-                html.Div([
-                    html.Label('Risk Free %:', style={'fontSize':'10px','marginRight':'4px'}),
-                    dcc.Input(id='fe-rf', type='number', value=2.0, min=0, max=20, step=0.1,
-                              style={'width':'50px','fontSize':'10px'}),
-                ], style={'display':'flex','alignItems':'center','marginRight':'12px'}),
-                dcc.RadioItems(id='fe-risk-measure',
-                    options=[{'label':' Volatilità','value':'vol'},
-                             {'label':' VaR 20°','value':'var20'},
-                             {'label':' VaR 10°','value':'var10'}],
-                    value='vol', inline=True,
-                    inputStyle={'marginRight':'3px','cursor':'pointer'},
-                    labelStyle={'marginRight':'10px','fontSize':'10px','cursor':'pointer'}),
-                html.Button('Calcola Frontiera', id='fe-calc-btn', n_clicks=0,
-                            style={'background':'#0066cc','color':'white','border':'none',
-                                   'padding':'6px 14px','borderRadius':'4px','cursor':'pointer',
-                                   'fontWeight':'bold','fontSize':'11px',
-                                   'boxShadow':'0 2px 6px rgba(0,102,204,0.35)'}),
-            ], style={'width':'65%','display':'flex','alignItems':'center',
-                      'flexWrap':'wrap','gap':'4px'}),
-        ], style={'display':'flex','background':'#e8f0fb',
-                  'borderTop':'2px solid #0066cc','borderBottom':'1px solid #aed6f1',
-                  'padding':'4px 6px'}),
+                html.Label('Min %:', style={'fontSize':'10px','marginRight':'4px'}),
+                dcc.Input(id='fe-min-weight', type='number', value=0, min=0, max=100,
+                          style={'width':'45px','fontSize':'10px'}),
+            ], style={'display':'flex','alignItems':'center','marginRight':'12px'}),
+            html.Div([
+                html.Label('Max %:', style={'fontSize':'10px','marginRight':'4px'}),
+                dcc.Input(id='fe-max-weight', type='number', value=100, min=0, max=100,
+                          style={'width':'45px','fontSize':'10px'}),
+            ], style={'display':'flex','alignItems':'center','marginRight':'12px'}),
+            html.Div([
+                html.Label('Risk Free %:', style={'fontSize':'10px','marginRight':'4px'}),
+                dcc.Input(id='fe-rf', type='number', value=2.0, min=0, max=20, step=0.1,
+                          style={'width':'50px','fontSize':'10px'}),
+            ], style={'display':'flex','alignItems':'center','marginRight':'12px'}),
+            dcc.RadioItems(id='fe-risk-measure',
+                options=[{'label':' Volatilità','value':'vol'},
+                         {'label':' VaR 20°','value':'var20'},
+                         {'label':' VaR 10°','value':'var10'}],
+                value='vol', inline=True,
+                inputStyle={'marginRight':'3px','cursor':'pointer'},
+                labelStyle={'marginRight':'10px','fontSize':'10px','cursor':'pointer'}),
+            html.Button('Calcola Frontiera', id='fe-calc-btn', n_clicks=0,
+                        style={'background':'#0066cc','color':'white','border':'none',
+                               'padding':'6px 14px','borderRadius':'4px','cursor':'pointer',
+                               'fontWeight':'bold','fontSize':'11px',
+                               'boxShadow':'0 2px 6px rgba(0,102,204,0.35)'}),
+        ], style={'display':'flex','alignItems':'center','flexWrap':'wrap','gap':'4px',
+                  'padding':'6px 10px','background':'#e8f0fb',
+                  'borderBottom':'1px solid #aed6f1'}),
 
         # ── Griglia + Grafici ────────────────────────────────────────────────
         html.Div([
-            # Sinistra: asset
+            # Sinistra: griglia asset
             html.Div([
-                html.Div(id='fe-asset-count', style={'fontSize':'10px','color':'#555',
-                                                      'padding':'3px 5px'}),
+                html.Div([
+                    html.Div(id='fe-asset-count',
+                             style={'fontSize':'10px','color':'#555','padding':'3px 5px'}),
+                    html.Div(id='fe-hint',
+                             style={'display':'none','fontSize':'9px','color':'#0066cc',
+                                    'fontWeight':'600','padding':'2px 5px 4px',
+                                    'background':'#e8f4ff','borderLeft':'3px solid #0066cc',
+                                    'marginBottom':'4px','borderRadius':'0 4px 4px 0'}),
+                ]),
                 html.Div(id='fe-grid', children=[
                     html.Div('Carica i dati e clicca Calcola Frontiera',
                              style={'color':'#888','fontStyle':'italic',
                                     'fontSize':'11px','padding':'12px 8px'})
                 ]),
-            ], style={'width':'35%','overflowY':'auto','borderRight':'1px solid #ccd9ee',
+            ], style={'width':'40%','overflowY':'auto','borderRight':'1px solid #ccd9ee',
                       'background':'white'}),
 
             # Destra: grafici
             html.Div([
-                html.Div(id='fe-hint',
-                         style={'display':'none','fontSize':'9px','color':'#0066cc',
-                                'fontWeight':'600','padding':'2px 5px 4px',
-                                'background':'#e8f4ff','borderLeft':'3px solid #0066cc',
-                                'marginBottom':'4px','borderRadius':'0 4px 4px 0'}),
                 dcc.Graph(id='fe-frontier-chart',
                           style={'height':'48vh'},
                           config={'displayModeBar':True}),
@@ -439,8 +423,8 @@ app.layout = html.Div([
                           config={'displayModeBar':True}),
                 html.Div(id='fe-stats-panel',
                          style={'padding':'6px 10px','fontSize':'11px','color':'#1a3a5c'}),
-            ], style={'width':'65%','padding':'6px','background':'white'}),
-        ], style={'display':'flex','height':'calc(100vh - 170px)','overflow':'hidden'}),
+            ], style={'width':'60%','padding':'6px','background':'white'}),
+        ], style={'display':'flex','height':'calc(100vh - 180px)','overflow':'hidden'}),
 
     ], style={'marginTop':'64px'}),
 
@@ -450,7 +434,8 @@ app.layout = html.Div([
     dcc.Store(id='fe-loaded-flag',   data=False),
     dcc.Store(id='fe-weights-p1',    data={}),
     dcc.Store(id='fe-weights-p2',    data={}),
-    dcc.Store(id='fe-selected',      data=[]),
+    dcc.Store(id='fe-weights-p3',    data={}),
+    dcc.Store(id='fe-pesi-result',   data=None),
     dcc.Interval(id='fe-poll', interval=800, n_intervals=0, disabled=True),
 
     # Modale progresso
@@ -479,7 +464,7 @@ app.layout = html.Div([
 ], style={'minHeight':'100vh'})
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Callbacks
+# Callbacks — Download / polling
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.callback(
@@ -495,12 +480,9 @@ app.layout = html.Div([
 def start_download(n, start_date):
     if not n:
         raise PreventUpdate
-    tickers     = _TICKERS
-    descrizione = _DESCRIZIONI
-    valuta      = _VALUTA
     sd = start_date or (pd.Timestamp.today()-pd.DateOffset(years=10)).strftime('%Y-%m-%d')
     t = threading.Thread(target=_download_worker,
-                         args=(tickers, descrizione, valuta, sd), daemon=True)
+                         args=(_TICKERS, _DESCRIZIONI, _VALUTA, sd), daemon=True)
     t.start()
     return False, _MODAL_SHOWN, _FILL_LOADING, '0 / … (0%)', 'Avvio download…'
 
@@ -522,8 +504,8 @@ def start_download(n, start_date):
 )
 def poll_progress(n):
     with _DL_LOCK:
-        st    = dict(_DL_STATE)
-        buf   = dict(_DL_BUFFER)
+        st  = dict(_DL_STATE)
+        buf = dict(_DL_BUFFER)
 
     if st['status'] == 'idle':
         raise PreventUpdate
@@ -536,7 +518,7 @@ def poll_progress(n):
                'background':'#ddd','borderRadius':'8px','overflow':'hidden'}
 
     if st['status'] == 'running':
-        txt  = f'{current}/{total} ({pct}%)'
+        txt = f'{current}/{total} ({pct}%)'
         return (txt, bar_s, bar_c, bar_s, f'{current}/{total} ({pct}%)',
                 'Download in corso…', False,
                 no_update, no_update, no_update, no_update)
@@ -574,6 +556,7 @@ def close_modal(n):
 
 @app.callback(
     Output('fe-hint', 'style'),
+    Output('fe-hint', 'children'),
     Input('fe-loaded-flag', 'data'),
     Input('fe-calc-btn',    'n_clicks'),
 )
@@ -585,10 +568,35 @@ def toggle_hint(loaded, calc):
     ctx = callback_context
     trig = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else ''
     if trig == 'fe-calc-btn':
-        return hidden
+        return hidden, no_update
     if trig == 'fe-loaded-flag' and loaded:
-        return {**shown, 'children': '▶ Dati caricati — clicca CALCOLA FRONTIERA'}
-    return hidden
+        return shown, '▶ Dati caricati — clicca CALCOLA FRONTIERA'
+    return hidden, no_update
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Griglia asset (11 colonne)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _lbl(w, txt, color='#1a3a5c'):
+    return html.Div(txt, style={
+        'width': w, 'textAlign': 'center', 'fontWeight': 'bold',
+        'fontSize': '9px', 'color': color,
+        'display': 'flex', 'alignItems': 'center', 'justifyContent': 'center',
+        'whiteSpace': 'pre-line',
+    })
+
+def _btn_des(btn_id, w):
+    return html.Div(
+        html.Button('Des', id=btn_id, n_clicks=0,
+                    style={'fontSize': '8px', 'padding': '1px 4px',
+                           'width': '88%', 'cursor': 'pointer',
+                           'background': '#f8d7da', 'border': '1px solid #f5c6cb',
+                           'borderRadius': '3px', 'color': '#721c24'}),
+        style={'width': w, 'textAlign': 'center',
+               'display': 'flex', 'alignItems': 'center', 'justifyContent': 'center'})
+
+def _emp(w):
+    return html.Div('', style={'width': w})
 
 
 @app.callback(
@@ -597,12 +605,18 @@ def toggle_hint(loaded, calc):
     Input('fe-calc-btn',    'n_clicks'),
     State('fe-loaded-flag', 'data'),
     State('fe-stock-data',  'data'),
-    State({'type':'fe-chk','index':ALL}, 'value'),
-    State({'type':'fe-w1', 'index':ALL}, 'value'),
-    State({'type':'fe-w2', 'index':ALL}, 'value'),
+    State({'type':'fe-chart-chk','index':ALL}, 'value'),
+    State({'type':'fe-main-chk', 'index':ALL}, 'value'),
+    State({'type':'fe-fr1-chk',  'index':ALL}, 'value'),
+    State({'type':'fe-fr2-chk',  'index':ALL}, 'value'),
+    State({'type':'fe-w1',       'index':ALL}, 'value'),
+    State({'type':'fe-w2',       'index':ALL}, 'value'),
+    State({'type':'fe-w3',       'index':ALL}, 'value'),
     prevent_initial_call=True,
 )
-def build_grid(n, loaded, stock_data, chk_vals, w1_vals, w2_vals):
+def build_grid(n, loaded, stock_data,
+               chart_vals, main_vals, fr1_vals, fr2_vals,
+               w1_vals, w2_vals, w3_vals):
     placeholder = html.Div('Carica i dati e clicca Calcola Frontiera',
                             style={'color':'#888','fontStyle':'italic',
                                    'fontSize':'11px','padding':'12px 8px'})
@@ -613,95 +627,409 @@ def build_grid(n, loaded, stock_data, chk_vals, w1_vals, w2_vals):
     if returns_df is None:
         return [placeholder], ''
 
-    saved_chk = []
-    for v in chk_vals or []:
-        if v: saved_chk.extend(v)
-    saved_w1 = {}
-    saved_w2 = {}
+    asset_names = returns_df.columns.tolist()
 
-    rows = []
-    for i, asset in enumerate(returns_df.columns):
-        is_checked = asset in saved_chk
-        w1_val = saved_w1.get(asset, 0)
-        w2_val = saved_w2.get(asset, 0)
+    # Raccoglie stato precedente
+    def _collect_chk(vals):
+        result = set()
+        for v in (vals or []):
+            if v:
+                result.update(v)
+        return result
+
+    saved_chart = _collect_chk(chart_vals)
+    saved_main  = _collect_chk(main_vals)
+    saved_fr1   = _collect_chk(fr1_vals)
+    saved_fr2   = _collect_chk(fr2_vals)
+
+    # Header
+    header = html.Div([
+        html.Div('Asset', style={'width':'15%','fontWeight':'bold','fontSize':'9px',
+                                  'paddingLeft':'5px','color':'#1a3a5c',
+                                  'display':'flex','alignItems':'center'}),
+        _lbl('5%',  'Chart'),
+        _lbl('7%',  'Main'),
+        _lbl('7%',  'Fr1'),
+        _lbl('7%',  'Fr2'),
+        _lbl('8%',  'F1',  '#e6194b'),
+        _lbl('8%',  'F2',  '#3cb44b'),
+        _lbl('8%',  'F3',  '#4363d8'),
+        _lbl('10%', 'Main\n(pesi)'),
+        _lbl('12%', 'Fr1\n(pesi)'),
+        _lbl('13%', 'Fr2\n(pesi)'),
+    ], style={'display':'flex','padding':'4px 0 2px',
+              'background':'#eaf4fb','borderTop':'2px solid #2e6da4',
+              'borderBottom':'1px solid #aed6f1'})
+
+    # Des-buttons row
+    des_row = html.Div([
+        _emp('15%'),
+        _btn_des('fe-desel-chart', '5%'),
+        _btn_des('fe-desel-main',  '7%'),
+        _btn_des('fe-desel-fr1',   '7%'),
+        _btn_des('fe-desel-fr2',   '7%'),
+        _btn_des('fe-reset-f1',    '8%'),
+        _btn_des('fe-reset-f2',    '8%'),
+        _btn_des('fe-reset-f3',    '8%'),
+        _emp('10%'),
+        _emp('12%'),
+        _emp('13%'),
+    ], style={'display':'flex','padding':'3px 0 5px',
+              'background':'#f5faff','borderBottom':'2px solid #2e6da4',
+              'marginBottom':'4px'})
+
+    rows = [header, des_row]
+
+    # main_vals is [] only on first render (no prior fe-main-chk components);
+    # on re-render it's a list of lists (possibly empty per asset).
+    first_render = not main_vals
+
+    for i, asset in enumerate(asset_names):
+        bg = 'white' if i % 2 == 0 else '#fafcff'
+
+        chart_val = [asset]           if asset in saved_chart else []
+        main_val  = [f'{asset}_Main'] if (first_render or asset in saved_main) else []
+        fr1_val   = [f'{asset}_Fr1']  if asset in saved_fr1   else []
+        fr2_val   = [f'{asset}_Fr2']  if asset in saved_fr2   else []
+
+        def _inp(typ, idx, border_color, bg_inp):
+            return dcc.Input(id={'type': typ, 'index': idx},
+                             type='number', value=0, min=0, max=100, step=0.1,
+                             placeholder='0',
+                             style={'width':'90%','textAlign':'right','fontSize':'9px',
+                                    'border':f'1px solid {border_color}',
+                                    'borderRadius':'3px','background':bg_inp})
+
         row = html.Div([
             html.Div(
                 html.Div(html.B(asset, style={'color':'#1a3a5c'}),
                          style={'overflow':'hidden','whiteSpace':'nowrap',
                                 'textOverflow':'ellipsis','width':'100%'}),
                 **{'data-tooltip': asset},
-                style={'width':'50%','height':'28px','display':'flex',
+                style={'width':'15%','height':'30px','display':'flex',
                        'alignItems':'center','paddingLeft':'5px',
-                       'fontSize':'8px','overflow':'visible',
+                       'fontSize':'9px','overflow':'visible',
                        'position':'relative','cursor':'default'}
             ),
+            # Chart checkbox
             html.Div(
-                dcc.Input(id={'type':'fe-w1','index':asset},
-                          type='number', value=w1_val, min=0, max=100, step=1,
-                          style={'width':'100%','fontSize':'9px','textAlign':'center',
-                                 'border':'1px solid #ffcdd2','borderRadius':'3px',
-                                 'background':'#fff8f8'}),
-                style={'width':'25%','padding':'1px 2px'}
-            ),
+                dcc.Checklist(id={'type':'fe-chart-chk','index':asset},
+                              options=[{'label':'','value':asset}],
+                              value=chart_val,
+                              style={'justifyContent':'center','width':'100%'}),
+                style={'width':'5%','height':'30px','display':'flex',
+                       'alignItems':'center','justifyContent':'center'}),
+            # Main checkbox
             html.Div(
-                dcc.Input(id={'type':'fe-w2','index':asset},
-                          type='number', value=w2_val, min=0, max=100, step=1,
-                          style={'width':'100%','fontSize':'9px','textAlign':'center',
-                                 'border':'1px solid #c8e6c9','borderRadius':'3px',
-                                 'background':'#f8fff8'}),
-                style={'width':'25%','padding':'1px 2px'}
-            ),
-            dcc.Checklist(id={'type':'fe-chk','index':asset},
-                          options=[{'label':'','value':asset}],
-                          value=[asset] if is_checked else [],
-                          style={'display':'none'}),
-        ], style={'display':'flex','alignItems':'center','height':'28px',
-                  'borderBottom':'1px solid #f0f4fb',
-                  'background':'white' if i%2==0 else '#fafcff'})
+                dcc.Checklist(id={'type':'fe-main-chk','index':asset},
+                              options=[{'label':'','value':f'{asset}_Main'}],
+                              value=main_val,
+                              style={'justifyContent':'center','width':'100%'}),
+                style={'width':'7%','height':'30px','display':'flex',
+                       'alignItems':'center','justifyContent':'center'}),
+            # Fr1 checkbox
+            html.Div(
+                dcc.Checklist(id={'type':'fe-fr1-chk','index':asset},
+                              options=[{'label':'','value':f'{asset}_Fr1'}],
+                              value=fr1_val,
+                              style={'justifyContent':'center','width':'100%'}),
+                style={'width':'7%','height':'30px','display':'flex',
+                       'alignItems':'center','justifyContent':'center'}),
+            # Fr2 checkbox
+            html.Div(
+                dcc.Checklist(id={'type':'fe-fr2-chk','index':asset},
+                              options=[{'label':'','value':f'{asset}_Fr2'}],
+                              value=fr2_val,
+                              style={'justifyContent':'center','width':'100%'}),
+                style={'width':'7%','height':'30px','display':'flex',
+                       'alignItems':'center','justifyContent':'center'}),
+            # F1 input
+            html.Div(_inp('fe-w1', asset, '#ffcdd2', '#fff8f8'), style={'width':'8%'}),
+            # F2 input
+            html.Div(_inp('fe-w2', asset, '#c8e6c9', '#f8fff8'), style={'width':'8%'}),
+            # F3 input
+            html.Div(_inp('fe-w3', asset, '#c5cae9', '#f8f8ff'), style={'width':'8%'}),
+            # Pesi display
+            html.Div(id={'type':'fe-wm','index':asset},  children='--',
+                     style={'width':'10%','textAlign':'center','fontSize':'8px',
+                            'display':'flex','alignItems':'center','justifyContent':'center'}),
+            html.Div(id={'type':'fe-wf1','index':asset}, children='--',
+                     style={'width':'12%','textAlign':'center','fontSize':'8px',
+                            'display':'flex','alignItems':'center','justifyContent':'center'}),
+            html.Div(id={'type':'fe-wf2','index':asset}, children='--',
+                     style={'width':'13%','textAlign':'center','fontSize':'8px',
+                            'display':'flex','alignItems':'center','justifyContent':'center'}),
+        ], style={'display':'flex','alignItems':'center','height':'30px',
+                  'borderBottom':'1px dotted #eee','background':bg})
         rows.append(row)
 
-    count_txt = f'{len(returns_df.columns)} asset disponibili'
+    # Port1/Port2/Port3 rows
+    port_colors = {'Port1':'#e6194b','Port2':'#ff7f0e','Port3':'#9467bd'}
+    for p_name, p_color in port_colors.items():
+        p_val = [p_name] if p_name in saved_chart else []
+        rows.append(html.Div([
+            html.Div(html.B(p_name, style={'color':p_color}),
+                     style={'width':'15%','height':'30px','display':'flex',
+                            'alignItems':'center','paddingLeft':'5px','fontSize':'9px'}),
+            html.Div(
+                dcc.Checklist(id={'type':'fe-chart-chk','index':p_name},
+                              options=[{'label':'','value':p_name}],
+                              value=p_val,
+                              style={'justifyContent':'center'}),
+                style={'width':'5%','height':'30px','display':'flex',
+                       'alignItems':'center','justifyContent':'center'}),
+            _emp('7%'), _emp('7%'), _emp('7%'),
+            _emp('8%'), _emp('8%'), _emp('8%'),
+            _emp('10%'), _emp('12%'), _emp('13%'),
+        ], style={'display':'flex','borderBottom':'1px dotted #eee','background':'#f0f0f0'}))
+
+    # Frontiera F1/F2/F3 rows
+    frontier_labels = [('Frontiera F1','#e6194b'),('Frontiera F2','#3cb44b'),('Frontiera F3','#4363d8')]
+    for f_name, f_color in frontier_labels:
+        f_val = [f_name] if f_name in saved_chart else []
+        rows.append(html.Div([
+            html.Div(html.B(f_name, style={'color':f_color}),
+                     style={'width':'15%','height':'30px','display':'flex',
+                            'alignItems':'center','paddingLeft':'5px','fontSize':'9px'}),
+            html.Div(
+                dcc.Checklist(id={'type':'fe-chart-chk','index':f_name},
+                              options=[{'label':'','value':f_name}],
+                              value=f_val,
+                              style={'justifyContent':'center'}),
+                style={'width':'5%','height':'30px','display':'flex',
+                       'alignItems':'center','justifyContent':'center'}),
+            _emp('7%'), _emp('7%'), _emp('7%'),
+            _emp('8%'), _emp('8%'), _emp('8%'),
+            _emp('10%'), _emp('12%'), _emp('13%'),
+        ], style={'display':'flex','borderBottom':'1px dotted #eee','background':'#fff0e6'}))
+
+    # TOTALE PESI row (mostra somma pesi ottimali per le 3 frontiere)
+    totals_row = html.Div([
+        html.Div(html.B('TOTALE PESI', style={'color':'#d62728','fontSize':'9px'}),
+                 style={'width':'15%','height':'35px','display':'flex',
+                        'alignItems':'center','paddingLeft':'5px'}),
+        _emp('5%'), _emp('7%'), _emp('7%'), _emp('7%'),
+        _emp('8%'), _emp('8%'), _emp('8%'),
+        html.Div(id='fe-total-main',
+                 style={'width':'10%','textAlign':'center','fontSize':'10px',
+                        'fontWeight':'bold','color':'#d62728',
+                        'display':'flex','alignItems':'center','justifyContent':'center'}),
+        html.Div(id='fe-total-fr1',
+                 style={'width':'12%','textAlign':'center','fontSize':'10px',
+                        'fontWeight':'bold','color':'#d62728',
+                        'display':'flex','alignItems':'center','justifyContent':'center'}),
+        html.Div(id='fe-total-fr2',
+                 style={'width':'13%','textAlign':'center','fontSize':'10px',
+                        'fontWeight':'bold','color':'#d62728',
+                        'display':'flex','alignItems':'center','justifyContent':'center'}),
+    ], style={'display':'flex','borderTop':'2px solid #d62728',
+              'background':'#fff5f5','marginTop':'5px','paddingTop':'5px'})
+    rows.append(totals_row)
+
+    # TOTALE PESI F1-F2-F3 row (somma input pesi manuale)
+    totals_p_row = html.Div([
+        html.Div(html.B('TOTALE F1-F2-F3', style={'color':'#0066cc','fontSize':'9px'}),
+                 style={'width':'15%','height':'35px','display':'flex',
+                        'alignItems':'center','paddingLeft':'5px'}),
+        _emp('5%'), _emp('7%'), _emp('7%'), _emp('7%'),
+        html.Div(id='fe-total-p1',
+                 style={'width':'8%','textAlign':'center','fontSize':'10px',
+                        'fontWeight':'bold','color':'#d62728',
+                        'display':'flex','alignItems':'center','justifyContent':'center'}),
+        html.Div(id='fe-total-p2',
+                 style={'width':'8%','textAlign':'center','fontSize':'10px',
+                        'fontWeight':'bold','color':'#d62728',
+                        'display':'flex','alignItems':'center','justifyContent':'center'}),
+        html.Div(id='fe-total-p3',
+                 style={'width':'8%','textAlign':'center','fontSize':'10px',
+                        'fontWeight':'bold','color':'#d62728',
+                        'display':'flex','alignItems':'center','justifyContent':'center'}),
+        _emp('10%'), _emp('12%'), _emp('13%'),
+    ], style={'display':'flex','borderTop':'2px solid #0066cc',
+              'background':'#f0f8ff','marginTop':'5px','paddingTop':'5px'})
+    rows.append(totals_p_row)
+
+    count_txt = f'{len(asset_names)} asset disponibili'
     return rows, count_txt
 
 
-@app.callback(
-    Output('fe-selected',  'data'),
-    Input({'type':'fe-chk','index':ALL}, 'value'),
-)
-def collect_selected(vals):
-    result = []
-    for v in (vals or []):
-        if v: result.extend(v)
-    return result
-
+# ─────────────────────────────────────────────────────────────────────────────
+# Salva pesi portafogli
+# ─────────────────────────────────────────────────────────────────────────────
 
 @app.callback(
     Output('fe-weights-p1', 'data'),
     Output('fe-weights-p2', 'data'),
+    Output('fe-weights-p3', 'data'),
     Input({'type':'fe-w1','index':ALL}, 'value'),
     Input({'type':'fe-w2','index':ALL}, 'value'),
+    Input({'type':'fe-w3','index':ALL}, 'value'),
     State({'type':'fe-w1','index':ALL}, 'id'),
     prevent_initial_call=True,
 )
-def save_weights(w1_vals, w2_vals, ids):
-    p1, p2 = {}, {}
+def save_weights(w1_vals, w2_vals, w3_vals, ids):
+    p1, p2, p3 = {}, {}, {}
     for val, inp_id in zip(w1_vals, ids):
         p1[inp_id['index']] = val or 0
     for val, inp_id in zip(w2_vals, ids):
         p2[inp_id['index']] = val or 0
-    return p1, p2
+    for val, inp_id in zip(w3_vals, ids):
+        p3[inp_id['index']] = val or 0
+    return p1, p2, p3
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Totali pesi input F1/F2/F3
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output('fe-total-p1', 'children'),
+    Output('fe-total-p2', 'children'),
+    Output('fe-total-p3', 'children'),
+    Input({'type':'fe-w1','index':ALL}, 'value'),
+    Input({'type':'fe-w2','index':ALL}, 'value'),
+    Input({'type':'fe-w3','index':ALL}, 'value'),
+    prevent_initial_call=True,
+)
+def update_weight_totals(w1_vals, w2_vals, w3_vals):
+    def _fmt(vals):
+        s = sum(v for v in (vals or []) if v is not None)
+        color = '#2ca02c' if 99.5 <= s <= 100.5 else '#d62728'
+        return html.Span(f'{s:.1f}%', style={'color': color})
+    return _fmt(w1_vals), _fmt(w2_vals), _fmt(w3_vals)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Des / Reset buttons
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output({'type':'fe-chart-chk','index':ALL}, 'value', allow_duplicate=True),
+    Output('fe-desel-chart', 'children'),
+    Input('fe-desel-chart', 'n_clicks'),
+    State({'type':'fe-chart-chk','index':ALL}, 'value'),
+    State({'type':'fe-chart-chk','index':ALL}, 'options'),
+    prevent_initial_call=True,
+)
+def desel_chart(n, vals, opts):
+    if not n:
+        raise PreventUpdate
+    all_sel = all(v for v in vals)
+    if all_sel:
+        return [[] for _ in vals], 'Sel'
+    return [[o['value'] for o in opt] for opt, _ in zip(opts, vals)], 'Des'
+
+
+@app.callback(
+    Output({'type':'fe-main-chk','index':ALL}, 'value', allow_duplicate=True),
+    Output('fe-desel-main', 'children'),
+    Input('fe-desel-main', 'n_clicks'),
+    State({'type':'fe-main-chk','index':ALL}, 'value'),
+    State({'type':'fe-main-chk','index':ALL}, 'options'),
+    prevent_initial_call=True,
+)
+def desel_main(n, vals, opts):
+    if not n:
+        raise PreventUpdate
+    all_sel = all(v for v in vals)
+    if all_sel:
+        return [[] for _ in vals], 'Sel'
+    return [[o['value'] for o in opt] for opt, _ in zip(opts, vals)], 'Des'
+
+
+@app.callback(
+    Output({'type':'fe-fr1-chk','index':ALL}, 'value', allow_duplicate=True),
+    Output('fe-desel-fr1', 'children'),
+    Input('fe-desel-fr1', 'n_clicks'),
+    State({'type':'fe-fr1-chk','index':ALL}, 'value'),
+    State({'type':'fe-fr1-chk','index':ALL}, 'options'),
+    prevent_initial_call=True,
+)
+def desel_fr1(n, vals, opts):
+    if not n:
+        raise PreventUpdate
+    all_sel = all(v for v in vals)
+    if all_sel:
+        return [[] for _ in vals], 'Sel'
+    return [[o['value'] for o in opt] for opt, _ in zip(opts, vals)], 'Des'
+
+
+@app.callback(
+    Output({'type':'fe-fr2-chk','index':ALL}, 'value', allow_duplicate=True),
+    Output('fe-desel-fr2', 'children'),
+    Input('fe-desel-fr2', 'n_clicks'),
+    State({'type':'fe-fr2-chk','index':ALL}, 'value'),
+    State({'type':'fe-fr2-chk','index':ALL}, 'options'),
+    prevent_initial_call=True,
+)
+def desel_fr2(n, vals, opts):
+    if not n:
+        raise PreventUpdate
+    all_sel = all(v for v in vals)
+    if all_sel:
+        return [[] for _ in vals], 'Sel'
+    return [[o['value'] for o in opt] for opt, _ in zip(opts, vals)], 'Des'
+
+
+@app.callback(
+    Output({'type':'fe-w1','index':ALL}, 'value', allow_duplicate=True),
+    Input('fe-reset-f1', 'n_clicks'),
+    State({'type':'fe-w1','index':ALL}, 'id'),
+    prevent_initial_call=True,
+)
+def reset_f1(n, ids):
+    if not n:
+        raise PreventUpdate
+    return [0] * len(ids)
+
+
+@app.callback(
+    Output({'type':'fe-w2','index':ALL}, 'value', allow_duplicate=True),
+    Input('fe-reset-f2', 'n_clicks'),
+    State({'type':'fe-w2','index':ALL}, 'id'),
+    prevent_initial_call=True,
+)
+def reset_f2(n, ids):
+    if not n:
+        raise PreventUpdate
+    return [0] * len(ids)
+
+
+@app.callback(
+    Output({'type':'fe-w3','index':ALL}, 'value', allow_duplicate=True),
+    Input('fe-reset-f3', 'n_clicks'),
+    State({'type':'fe-w3','index':ALL}, 'id'),
+    prevent_initial_call=True,
+)
+def reset_f3(n, ids):
+    if not n:
+        raise PreventUpdate
+    return [0] * len(ids)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Calcola frontiera — produce grafici + salva pesi ottimali in store
+# ─────────────────────────────────────────────────────────────────────────────
 
 @app.callback(
     Output('fe-frontier-chart', 'figure'),
     Output('fe-perf-chart',     'figure'),
     Output('fe-stats-panel',    'children'),
+    Output('fe-pesi-result',    'data'),
+    Output('fe-total-main',     'children'),
+    Output('fe-total-fr1',      'children'),
+    Output('fe-total-fr2',      'children'),
     Input('fe-calc-btn',        'n_clicks'),
     State('fe-stock-data',      'data'),
     State('fe-prices-data',     'data'),
-    State('fe-selected',        'data'),
+    State({'type':'fe-chart-chk','index':ALL}, 'value'),
+    State({'type':'fe-chart-chk','index':ALL}, 'id'),
+    State({'type':'fe-main-chk', 'index':ALL}, 'value'),
+    State({'type':'fe-fr1-chk',  'index':ALL}, 'value'),
+    State({'type':'fe-fr2-chk',  'index':ALL}, 'value'),
     State('fe-weights-p1',      'data'),
     State('fe-weights-p2',      'data'),
+    State('fe-weights-p3',      'data'),
     State('fe-n-portfolios',    'value'),
     State('fe-min-weight',      'value'),
     State('fe-max-weight',      'value'),
@@ -711,21 +1039,27 @@ def save_weights(w1_vals, w2_vals, ids):
     State('fe-date-end',        'date'),
     prevent_initial_call=True,
 )
-def update_frontier(n, stock_data, prices_data, selected, w1, w2,
-                    n_port, wmin, wmax, rf, risk, date_start, date_end):
+def update_frontier(n, stock_data, prices_data,
+                    chart_vals, chart_ids,
+                    main_vals, fr1_vals, fr2_vals,
+                    w1, w2, w3,
+                    n_port, wmin, wmax, rf, risk,
+                    date_start, date_end):
+
     empty = go.Figure().update_layout(
-        paper_bgcolor='white', plot_bgcolor='#f8faff',
-        font_color='#1a3a5c',
+        paper_bgcolor='white', plot_bgcolor='#f8faff', font_color='#1a3a5c',
         annotations=[dict(text='Carica dati e clicca Calcola Frontiera',
                           xref='paper', yref='paper', x=0.5, y=0.5,
                           showarrow=False, font=dict(size=14, color='#6b7a99'))])
 
+    _no_pesi = None
+
     if not n or not stock_data:
-        return empty, empty, ''
+        return empty, empty, '', _no_pesi, '--', '--', '--'
 
     returns_df = _get_returns(stock_data)
     if returns_df is None or returns_df.empty:
-        return empty, empty, ''
+        return empty, empty, '', _no_pesi, '--', '--', '--'
 
     # Filtra per data
     if date_start:
@@ -734,104 +1068,138 @@ def update_frontier(n, stock_data, prices_data, selected, w1, w2,
         returns_df = returns_df.loc[:date_end]
     returns_df = returns_df.dropna(how='all', axis=1).dropna(how='all', axis=0)
 
-    # Filtra per asset selezionati
-    if selected:
-        cols = [c for c in selected if c in returns_df.columns]
-        if cols:
-            returns_df = returns_df[cols]
-
-    if returns_df.shape[1] < 2:
-        return empty, empty, 'Seleziona almeno 2 asset'
-
-    returns_df = returns_df.dropna()
-    if len(returns_df) < 30:
-        return empty, empty, 'Dati insufficienti per il periodo selezionato'
-
     wmin_f = (wmin or 0) / 100
     wmax_f = (wmax or 100) / 100
     rf_f   = (rf or 2.0) / 100
     n_f    = int(n_port or 15)
 
-    try:
-        df_f, max_sharpe, min_vol, asset_names = calc_frontier(
-            returns_df, n=n_f, wmin=wmin_f, wmax=wmax_f, rf=rf_f, risk=risk)
-    except Exception as e:
-        return empty, empty, f'Errore calcolo: {e}'
+    # Raccoglie asset selezionati per Chart
+    chart_selected = set()
+    for val in (chart_vals or []):
+        if val:
+            chart_selected.update(val)
+
+    # Raccoglie asset per Main/Fr1/Fr2
+    def _collect_assets(vals, suffix):
+        result = []
+        for val in (vals or []):
+            if val:
+                for v in val:
+                    result.append(v.replace(suffix, ''))
+        return result
+
+    main_assets = _collect_assets(main_vals, '_Main')
+    fr1_assets  = _collect_assets(fr1_vals,  '_Fr1')
+    fr2_assets  = _collect_assets(fr2_vals,  '_Fr2')
+
+    # Calcola le 3 frontiere
+    results = {}
+    for label, assets in [('Main', main_assets), ('Fr1', fr1_assets), ('Fr2', fr2_assets)]:
+        cols = [a for a in assets if a in returns_df.columns]
+        if len(cols) < 2:
+            results[label] = None
+            continue
+        sub = returns_df[cols].dropna()
+        if len(sub) < 30:
+            results[label] = None
+            continue
+        try:
+            df_f, ms, mv, names = calc_frontier(sub, n=n_f, wmin=wmin_f, wmax=wmax_f,
+                                                  rf=rf_f, risk=risk)
+            results[label] = {'df': df_f, 'ms': ms, 'mv': mv, 'names': names, 'ret': sub}
+        except Exception:
+            results[label] = None
 
     # ── Grafico frontiera ────────────────────────────────────────────────────
     fig = go.Figure()
+    palette = {'Main': '#0066cc', 'Fr1': '#3cb44b', 'Fr2': '#9467bd'}
+    star_colors = {'Main': 'gold', 'Fr1': '#aaff00', 'Fr2': '#ff00ff'}
 
-    # Curva frontiera
-    if not df_f.empty:
-        fig.add_trace(go.Scatter(
-            x=df_f['Volatility']*100, y=df_f['Return']*100,
-            mode='lines+markers',
-            name='Frontiera Efficiente',
-            line=dict(color='#0066cc', width=2),
-            marker=dict(size=5, color=df_f['Sharpe'],
-                        colorscale='RdYlGn', showscale=True,
-                        colorbar=dict(title='Sharpe', len=0.5)),
-            hovertemplate='<b>Frontiera</b><br>Rischio: %{x:.2f}%<br>Rendimento: %{y:.2f}%<extra></extra>',
-        ))
+    for label, res in results.items():
+        if res is None:
+            continue
+        df_f = res['df']
+        ms   = res['ms']
+        mv   = res['mv']
+        col  = palette[label]
 
-    # Portafoglio max Sharpe
-    if max_sharpe is not None:
-        fig.add_trace(go.Scatter(
-            x=[max_sharpe['Volatility']*100], y=[max_sharpe['Return']*100],
-            mode='markers', name='Max Sharpe',
-            marker=dict(symbol='star', size=16, color='gold',
-                        line=dict(color='#cc8800', width=1.5)),
-            hovertemplate=f"<b>Max Sharpe: {max_sharpe['Sharpe']:.2f}</b><br>Rischio: {max_sharpe['Volatility']*100:.2f}%<br>Rendimento: {max_sharpe['Return']*100:.2f}%<extra></extra>",
-        ))
+        show_f = f'Frontiera {label}' in chart_selected or not chart_selected
+        if not show_f and f'Frontiera {label}' not in ['Frontiera F1','Frontiera F2','Frontiera F3']:
+            show_f = True
 
-    # Portafoglio min volatilità
-    if min_vol is not None:
-        fig.add_trace(go.Scatter(
-            x=[min_vol['Volatility']*100], y=[min_vol['Return']*100],
-            mode='markers', name='Min Rischio',
-            marker=dict(symbol='diamond', size=14, color='#ff6b35',
-                        line=dict(color='#cc4400', width=1.5)),
-            hovertemplate=f"<b>Min Rischio</b><br>Rischio: {min_vol['Volatility']*100:.2f}%<br>Rendimento: {min_vol['Return']*100:.2f}%<extra></extra>",
-        ))
+        # Frontiera F1/F2/F3 hanno ID diversi nella griglia
+        f_key = {'Main':'Frontiera F1','Fr1':'Frontiera F2','Fr2':'Frontiera F3'}[label]
+        show_curve = (f_key in chart_selected) or (not chart_selected)
 
-    # Singoli asset
-    mu  = returns_df.mean()
-    cov = returns_df.cov()
-    for asset in asset_names:
-        w_single = np.zeros(len(asset_names))
-        w_single[asset_names.index(asset)] = 1.0
-        ret_a, vol_a = _port_perf(w_single, mu, cov)
-        fig.add_trace(go.Scatter(
-            x=[vol_a*100], y=[ret_a*100],
-            mode='markers+text', name=asset,
-            marker=dict(size=7, symbol='circle', opacity=0.7),
-            text=[asset[:8]], textposition='top center',
-            textfont=dict(size=8),
-            showlegend=False,
-            hovertemplate=f'<b>{asset}</b><br>Rischio: {vol_a*100:.2f}%<br>Rendimento: {ret_a*100:.2f}%<extra></extra>',
-        ))
+        if not df_f.empty and show_curve:
+            fig.add_trace(go.Scatter(
+                x=df_f['Volatility']*100, y=df_f['Return']*100,
+                mode='lines+markers', name=f'Frontiera {label}',
+                line=dict(color=col, width=2),
+                marker=dict(size=5, color=df_f['Sharpe'],
+                            colorscale='RdYlGn', showscale=(label=='Main'),
+                            colorbar=dict(title='Sharpe', len=0.4)),
+                hovertemplate=f'<b>Frontiera {label}</b><br>Rischio: %{{x:.2f}}%<br>Rendimento: %{{y:.2f}}%<extra></extra>',
+            ))
 
-    # P1 e P2 se definiti
-    for pname, pweights, pcolor in [('P1', w1, '#e6194b'), ('P2', w2, '#3cb44b')]:
-        if pweights and any(v > 0 for v in pweights.values()):
-            try:
-                ret_p, vol_p, sh_p, _ = calc_single_portfolio(pweights, returns_df, rf_f)
-                fig.add_trace(go.Scatter(
-                    x=[vol_p*100], y=[ret_p*100],
-                    mode='markers', name=pname,
-                    marker=dict(size=14, symbol='pentagon', color=pcolor,
-                                line=dict(color='white', width=2)),
-                    hovertemplate=f'<b>{pname}</b><br>Rischio: {vol_p*100:.2f}%<br>Rendimento: {ret_p*100:.2f}%<br>Sharpe: {sh_p:.2f}<extra></extra>',
-                ))
-            except Exception:
-                pass
+        if ms is not None:
+            fig.add_trace(go.Scatter(
+                x=[ms['Volatility']*100], y=[ms['Return']*100],
+                mode='markers', name=f'Max Sharpe {label}',
+                marker=dict(symbol='star', size=14, color=star_colors[label],
+                            line=dict(color='#555', width=1)),
+                hovertemplate=f"<b>Max Sharpe {label}: {ms['Sharpe']:.2f}</b><br>Rischio: {ms['Volatility']*100:.2f}%<br>Rendimento: {ms['Return']*100:.2f}%<extra></extra>",
+            ))
 
-    risk_label = {'vol': 'Volatilità Annualizzata (%)',
-                  'var20': 'VaR 80% Annualizzato (%)',
-                  'var10': 'VaR 90% Annualizzato (%)'}[risk]
+    # Singoli asset (solo se in chart_selected o nessuna selezione chart)
+    if results.get('Main') and results['Main']:
+        mu_all  = results['Main']['ret'].mean()
+        cov_all = results['Main']['ret'].cov()
+        for asset in results['Main']['names']:
+            if asset not in chart_selected and chart_selected:
+                continue
+            idx = results['Main']['names'].index(asset)
+            w_s = np.zeros(len(results['Main']['names']))
+            w_s[idx] = 1.0
+            ret_a, vol_a = _port_perf(w_s, mu_all, cov_all)
+            fig.add_trace(go.Scatter(
+                x=[vol_a*100], y=[ret_a*100],
+                mode='markers+text', name=asset,
+                marker=dict(size=7, symbol='circle', opacity=0.7),
+                text=[asset[:8]], textposition='top center',
+                textfont=dict(size=8), showlegend=False,
+                hovertemplate=f'<b>{asset}</b><br>Rischio: {vol_a*100:.2f}%<br>Rendimento: {ret_a*100:.2f}%<extra></extra>',
+            ))
+
+    # Portafogli P1/P2/P3
+    port_show = {'Port1': w1, 'Port2': w2, 'Port3': w3}
+    port_colors_map = {'Port1':'#e6194b','Port2':'#ff7f0e','Port3':'#9467bd'}
+    port_symbols    = {'Port1':'pentagon','Port2':'hexagon','Port3':'octagon'}
+    for p_name, pweights in port_show.items():
+        if (p_name not in chart_selected and chart_selected):
+            continue
+        if not pweights or not any(v > 0 for v in pweights.values()):
+            continue
+        # Usa la frontiera Main per il calcolo del punto
+        base_ret = (results.get('Main') or {}).get('ret')
+        if base_ret is None:
+            base_ret = returns_df
+        try:
+            ret_p, vol_p, sh_p, _ = calc_single_portfolio(pweights, base_ret, rf_f)
+            fig.add_trace(go.Scatter(
+                x=[vol_p*100], y=[ret_p*100],
+                mode='markers', name=p_name,
+                marker=dict(size=14, symbol=port_symbols[p_name],
+                            color=port_colors_map[p_name],
+                            line=dict(color='white', width=2)),
+                hovertemplate=f'<b>{p_name}</b><br>Rischio: {vol_p*100:.2f}%<br>Rendimento: {ret_p*100:.2f}%<br>Sharpe: {sh_p:.2f}<extra></extra>',
+            ))
+        except Exception:
+            pass
+
+    risk_label = {'vol':'Volatilità Annualizzata (%)','var20':'VaR 80% Ann. (%)','var10':'VaR 90% Ann. (%)'}[risk]
     fig.update_layout(
-        title=dict(text='Frontiera Efficiente', font=dict(size=14, color='#1a3a6b'),
-                   x=0.02),
+        title=dict(text='Frontiera Efficiente', font=dict(size=14,color='#1a3a6b'), x=0.02),
         xaxis=dict(title=risk_label, gridcolor='#e8eef8', zeroline=False),
         yaxis=dict(title='Rendimento Atteso Annualizzato (%)', gridcolor='#e8eef8', zeroline=False),
         paper_bgcolor='white', plot_bgcolor='#f8faff',
@@ -842,6 +1210,7 @@ def update_frontier(n, stock_data, prices_data, selected, w1, w2,
     )
 
     # ── Grafico performance cumulativa ───────────────────────────────────────
+    fig2 = empty
     if prices_data:
         try:
             prices_df = pd.read_json(io.StringIO(prices_data), orient='split')
@@ -852,11 +1221,12 @@ def update_frontier(n, stock_data, prices_data, selected, w1, w2,
                 prices_df = prices_df.loc[:date_end]
 
             fig2 = go.Figure()
-            cols_avail = [c for c in (selected or []) if c in prices_df.columns]
-            if not cols_avail:
-                cols_avail = prices_df.columns[:5].tolist()
-
-            for asset in cols_avail[:10]:
+            shown_assets = main_assets[:10] if main_assets else prices_df.columns[:5].tolist()
+            for asset in shown_assets:
+                if asset not in chart_selected and chart_selected:
+                    continue
+                if asset not in prices_df.columns:
+                    continue
                 s = prices_df[asset].dropna()
                 if len(s) > 1:
                     cum = (s / s.iloc[0] - 1) * 100
@@ -866,30 +1236,32 @@ def update_frontier(n, stock_data, prices_data, selected, w1, w2,
                         hovertemplate=f'<b>{asset}</b><br>%{{x|%d/%m/%Y}}<br>%{{y:.1f}}%<extra></extra>',
                     ))
 
-            # P1 e P2 performance
-            for pname, pweights, pcolor in [('P1', w1, '#e6194b'), ('P2', w2, '#3cb44b')]:
-                if pweights and any(v > 0 for v in pweights.values()):
-                    try:
-                        names = prices_df.columns.tolist()
-                        w_arr = np.array([pweights.get(n, 0)/100 for n in names])
-                        s_w   = w_arr.sum()
-                        if s_w > 0:
-                            w_arr = w_arr / s_w
-                        port_prices = (prices_df * w_arr).sum(axis=1)
-                        cum_p = (port_prices / port_prices.iloc[0] - 1) * 100
-                        fig2.add_trace(go.Scatter(
-                            x=cum_p.index, y=cum_p.values, mode='lines',
-                            name=pname, line=dict(width=2.5, color=pcolor, dash='dot'),
-                            hovertemplate=f'<b>{pname}</b><br>%{{x|%d/%m/%Y}}<br>%{{y:.1f}}%<extra></extra>',
-                        ))
-                    except Exception:
-                        pass
+            for p_name, pweights in port_show.items():
+                if (p_name not in chart_selected and chart_selected):
+                    continue
+                if not pweights or not any(v > 0 for v in pweights.values()):
+                    continue
+                try:
+                    names = prices_df.columns.tolist()
+                    w_arr = np.array([pweights.get(nm, 0)/100 for nm in names])
+                    s_w   = w_arr.sum()
+                    if s_w > 0:
+                        w_arr = w_arr / s_w
+                    port_prices = (prices_df * w_arr).sum(axis=1)
+                    cum_p = (port_prices / port_prices.iloc[0] - 1) * 100
+                    fig2.add_trace(go.Scatter(
+                        x=cum_p.index, y=cum_p.values, mode='lines',
+                        name=p_name, line=dict(width=2.5,color=port_colors_map[p_name],dash='dot'),
+                        hovertemplate=f'<b>{p_name}</b><br>%{{x|%d/%m/%Y}}<br>%{{y:.1f}}%<extra></extra>',
+                    ))
+                except Exception:
+                    pass
 
             fig2.update_layout(
-                title=dict(text='Performance Cumulativa (%)', font=dict(size=13, color='#1a3a6b'), x=0.02),
+                title=dict(text='Performance Cumulativa (%)', font=dict(size=13,color='#1a3a6b'), x=0.02),
                 xaxis=dict(gridcolor='#e8eef8', zeroline=False),
-                yaxis=dict(title='Rendimento cumulativo (%)', gridcolor='#e8eef8', zeroline=True,
-                           zerolinecolor='#aaa'),
+                yaxis=dict(title='Rendimento cumulativo (%)', gridcolor='#e8eef8',
+                           zeroline=True, zerolinecolor='#aaa'),
                 paper_bgcolor='white', plot_bgcolor='#f8faff',
                 font=dict(family='Inter, sans-serif', color='#1a3a5c', size=11),
                 legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0),
@@ -897,23 +1269,83 @@ def update_frontier(n, stock_data, prices_data, selected, w1, w2,
                 hovermode='x unified',
             )
         except Exception:
-            fig2 = empty
-    else:
-        fig2 = empty
+            pass
 
-    # ── Stats panel ─────────────────────────────────────────────────────────
+    # ── Pesi ottimali Max Sharpe per ogni frontiera ──────────────────────────
+    pesi_data = {}
+    total_labels = {'Main': '--', 'Fr1': '--', 'Fr2': '--'}
+
+    for label, res in results.items():
+        if res is None or res['ms'] is None:
+            continue
+        ms = res['ms']
+        names = res['names']
+        pesi_data[label] = {n: float(w)*100 for n, w in zip(names, ms['Weights'])}
+        total_labels[label] = f"{sum(ms['Weights'])*100:.1f}%"
+
+    def _fmt_total(val):
+        if val == '--':
+            return '--'
+        return html.Span(val, style={'color':'#2ca02c'})
+
+    # ── Stats panel ──────────────────────────────────────────────────────────
     stats = []
-    if max_sharpe is not None:
-        stats.append(html.Span([
-            html.B('Max Sharpe: ', style={'color':'#cc8800'}),
-            f"{max_sharpe['Return']*100:.1f}% rend · {max_sharpe['Volatility']*100:.1f}% rischio · Sharpe {max_sharpe['Sharpe']:.2f}",
-        ], style={'marginRight':'20px'}))
-    if min_vol is not None:
-        stats.append(html.Span([
-            html.B('Min Rischio: ', style={'color':'#ff6b35'}),
-            f"{min_vol['Return']*100:.1f}% rend · {min_vol['Volatility']*100:.1f}% rischio",
-        ]))
-    return fig, fig2, html.Div(stats, style={'display':'flex','flexWrap':'wrap','gap':'8px'})
+    for label, res in results.items():
+        if res is None:
+            continue
+        ms = res['ms']
+        mv = res['mv']
+        col = palette[label]
+        if ms is not None:
+            stats.append(html.Span([
+                html.B(f'{label} Max Sharpe: ', style={'color':col}),
+                f"{ms['Return']*100:.1f}% rend · {ms['Volatility']*100:.1f}% rischio · Sharpe {ms['Sharpe']:.2f}",
+            ], style={'marginRight':'16px','fontSize':'11px'}))
+
+    return (fig, fig2,
+            html.Div(stats, style={'display':'flex','flexWrap':'wrap','gap':'6px'}),
+            pesi_data,
+            _fmt_total(total_labels['Main']),
+            _fmt_total(total_labels['Fr1']),
+            _fmt_total(total_labels['Fr2']))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Secondo giro: aggiorna celle pesi ottimali dalla store
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.callback(
+    Output({'type':'fe-wm', 'index':ALL}, 'children'),
+    Output({'type':'fe-wf1','index':ALL}, 'children'),
+    Output({'type':'fe-wf2','index':ALL}, 'children'),
+    Input('fe-pesi-result', 'data'),
+    State({'type':'fe-wm', 'index':ALL}, 'id'),
+    prevent_initial_call=True,
+)
+def update_pesi_display(pesi_data, ids):
+    if not pesi_data or not ids:
+        raise PreventUpdate
+
+    wm_list, wf1_list, wf2_list = [], [], []
+    for inp_id in ids:
+        asset = inp_id['index']
+        wm  = pesi_data.get('Main', {}).get(asset)
+        wf1 = pesi_data.get('Fr1',  {}).get(asset)
+        wf2 = pesi_data.get('Fr2',  {}).get(asset)
+
+        def _fmt(v):
+            if v is None:
+                return '--'
+            if v < 0.05:
+                return html.Span('0%', style={'color':'#aaa'})
+            return html.Span(f'{v:.1f}%',
+                             style={'color':'#0066cc','fontWeight':'bold'})
+
+        wm_list.append(_fmt(wm))
+        wf1_list.append(_fmt(wf1))
+        wf2_list.append(_fmt(wf2))
+
+    return wm_list, wf1_list, wf2_list
 
 
 # server esposto per DispatcherMiddleware in wsgi.py

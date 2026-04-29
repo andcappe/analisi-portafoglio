@@ -1692,24 +1692,30 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
     benchmark_returns = df_with_portfolios[benchmark_col]
     benchmark_cumulative_returns = (1 + benchmark_returns).cumprod() - 1
 
-    ir_rolling = pd.DataFrame(index=df_with_portfolios.index)
-    for col in df_with_portfolios.columns:
-        if col != benchmark_col:
-            ir_rolling[f'{col}_InformationRatio'] = calculate_rolling_information_ratio(
+    # Calcola IR/Sharpe/TEV solo per gli asset effettivamente selezionati
+    _need_ir     = {s.replace('_InformationRatio', '') for s in selected_irs    if s}
+    _need_sharpe = {si.replace('_Sharpe', '')          for si in selected_sharpe if si}
+    _need_tev    = {ti.replace('_TEV', '')             for ti in selected_tev    if ti}
+
+    _extra = {}
+    for col in _need_ir:
+        if col in df_with_portfolios.columns and col != benchmark_col:
+            _extra[f'{col}_InformationRatio'] = calculate_rolling_information_ratio(
+                df_with_portfolios[col], benchmark_returns, window=ir_window)
+    for col in _need_sharpe:
+        if col in df_with_portfolios.columns:
+            _extra[f'{col}_SharpeRatio'] = calculate_rolling_sharpe_ratio(
+                df_with_portfolios[col], window=ir_window)
+    for col in _need_tev:
+        if col in df_with_portfolios.columns and col != benchmark_col:
+            _extra[f'{col}_TEV'] = calculate_tracking_error_volatility(
                 df_with_portfolios[col], benchmark_returns, window=ir_window)
 
-    sharpe_all = pd.DataFrame(index=df_with_portfolios.index)
-    for col in df_with_portfolios.columns:
-        sharpe_all[f'{col}_SharpeRatio'] = calculate_rolling_sharpe_ratio(
-            df_with_portfolios[col], window=ir_window)
-
-    tev_all = pd.DataFrame(index=df_with_portfolios.index)
-    for col in df_with_portfolios.columns:
-        if col != benchmark_col:
-            tev_all[f'{col}_TEV'] = calculate_tracking_error_volatility(
-                df_with_portfolios[col], benchmark_returns, window=ir_window)
-
-    df_final = pd.concat([df_with_portfolios, ir_rolling, sharpe_all, tev_all], axis=1)
+    if _extra:
+        df_final = pd.concat([df_with_portfolios,
+                               pd.DataFrame(_extra, index=df_with_portfolios.index)], axis=1)
+    else:
+        df_final = df_with_portfolios
 
     fig = make_subplots(
         rows=7, cols=1, shared_xaxes=False, vertical_spacing=0.03,
@@ -1765,6 +1771,19 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
                                       line=line_dict, legend='legend'), row=1, col=1)
             color_index += 1
 
+    # Mappa colore per asset (evita scan O(n²) in ogni subplot successivo)
+    _color_map = {}
+    for _t in fig.data:
+        _nm = _t.name or ''
+        if ' Cum. Returns' in _nm:
+            _asset = _nm.replace(' Cum. Returns', '')
+            try:
+                _c = _t.line.color
+                if _c:
+                    _color_map[_asset] = _c
+            except AttributeError:
+                pass
+
     # Subplot 2: AKRatio
     color_index = 0
     for col_ir in selected_irs:
@@ -1774,9 +1793,7 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
             if is_sel:
                 line_dict = dict(color='red', width=8)
             else:
-                tc = next((t.line.color for t in fig.data if t.name == f'{orig} Cum. Returns'), None)
-                if tc is None:
-                    tc = color_palette[color_index % len(color_palette)]
+                tc = _color_map.get(orig, color_palette[color_index % len(color_palette)])
                 line_dict = dict(color=tc, width=4 if orig.startswith('Port') else 2.5)
             fig.add_trace(go.Scatter(x=df_final.index, y=df_final[col_ir],
                                       name=col_ir.replace('_InformationRatio', '_AKRatio'),
@@ -1798,9 +1815,7 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
                 if is_sel:
                     line_dict = dict(color='red', width=8)
                 else:
-                    tc = next((t.line.color for t in fig.data if t.name == f'{an} Cum. Returns'), None)
-                    if tc is None:
-                        tc = color_palette[color_index % len(color_palette)]
+                    tc = _color_map.get(an, color_palette[color_index % len(color_palette)])
                     line_dict = dict(color=tc, dash='solid',
                                      width=4 if an.startswith('Port') else 2.5)
                 fig.add_trace(go.Scatter(x=df_final.index, y=df_final[sc], name=tn,
@@ -1817,9 +1832,7 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
                 if is_sel:
                     line_dict = dict(color='red', width=8)
                 else:
-                    tc = next((t.line.color for t in fig.data if t.name == f'{an} Cum. Returns'), None)
-                    if tc is None:
-                        tc = color_palette[color_index % len(color_palette)]
+                    tc = _color_map.get(an, color_palette[color_index % len(color_palette)])
                     line_dict = dict(color=tc, dash='dash',
                                      width=4 if an.startswith('Port') else 2.5)
                 fig.add_trace(go.Scatter(x=df_final.index, y=df_final[tc_nm], name=tn,
@@ -1830,21 +1843,19 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
         if di:
             an = di.replace('_DD', '')
             if an in df_with_portfolios.columns:
-                dds   = calculate_drawdown(df_with_portfolios[an]).reindex(df_final.index)
+                dds   = calculate_drawdown(df_with_portfolios[an])
                 tn    = f'{an} DrawDown'
                 is_sel = (selected_column == tn)
                 if is_sel:
                     line_dict = dict(color='red', width=8)
                     fillcolor = 'rgba(200,0,0,0.08)'
                 else:
-                    tc = next((t.line.color for t in fig.data if t.name == f'{an} Cum. Returns'), None)
-                    if tc is None:
-                        tc = color_palette[color_index % len(color_palette)]
+                    tc = _color_map.get(an, color_palette[color_index % len(color_palette)])
                     line_dict = dict(color=tc, dash='dot',
                                      width=4 if an.startswith('Port') else 2.5)
                     fillcolor = (tc.replace('rgb', 'rgba').replace(')', ',0.10)')
                                  if tc and tc.startswith('rgb') else 'rgba(200,0,0,0.08)')
-                fig.add_trace(go.Scatter(x=df_final.index, y=dds, name=tn,
+                fig.add_trace(go.Scatter(x=dds.index, y=dds, name=tn,
                                           line=line_dict, legend='legend5',
                                           fill='tozeroy', fillcolor=fillcolor), row=5, col=1)
 
@@ -1853,17 +1864,15 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
         if vi:
             an = vi.replace('_Vol', '')
             if an in df_with_portfolios.columns:
-                vs    = _rolling_volatility(df_with_portfolios[an], vol_window).reindex(df_final.index)
+                vs    = _rolling_volatility(df_with_portfolios[an], vol_window)
                 tn    = f'{an} Volatilità'
                 is_sel = (selected_column == tn)
                 if is_sel:
                     line_dict = dict(color='red', width=8)
                 else:
-                    tc = next((t.line.color for t in fig.data if t.name == f'{an} Cum. Returns'), None)
-                    if tc is None:
-                        tc = color_palette[color_index % len(color_palette)]
+                    tc = _color_map.get(an, color_palette[color_index % len(color_palette)])
                     line_dict = dict(color=tc, width=4 if an.startswith('Port') else 2.5)
-                fig.add_trace(go.Scatter(x=df_final.index, y=vs, name=tn,
+                fig.add_trace(go.Scatter(x=vs.index, y=vs, name=tn,
                                           line=line_dict, legend='legend6'), row=6, col=1)
 
     # Subplot 7: VaR
@@ -1871,36 +1880,32 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
         if v90:
             an = v90.replace('_VaR90', '')
             if an in df_with_portfolios.columns:
-                vs    = calculate_rolling_cvar(df_with_portfolios[an], vol_window, 0.10).reindex(df_final.index)
+                vs    = calculate_rolling_cvar(df_with_portfolios[an], vol_window, 0.10)
                 tn    = f'{an} VaR90'
                 is_sel = (selected_column == tn)
                 if is_sel:
                     line_dict = dict(color='red', width=8)
                 else:
-                    tc = next((t.line.color for t in fig.data if t.name == f'{an} Cum. Returns'), None)
-                    if tc is None:
-                        tc = color_palette[color_index % len(color_palette)]
+                    tc = _color_map.get(an, color_palette[color_index % len(color_palette)])
                     line_dict = dict(color=tc, width=4 if an.startswith('Port') else 2.5,
                                      dash='solid')
-                fig.add_trace(go.Scatter(x=df_final.index, y=vs, name=tn,
+                fig.add_trace(go.Scatter(x=vs.index, y=vs, name=tn,
                                           line=line_dict, legend='legend7'), row=7, col=1)
 
     for v95 in selected_var95:
         if v95:
             an = v95.replace('_VaR95', '')
             if an in df_with_portfolios.columns:
-                vs    = calculate_rolling_cvar(df_with_portfolios[an], vol_window, 0.05).reindex(df_final.index)
+                vs    = calculate_rolling_cvar(df_with_portfolios[an], vol_window, 0.05)
                 tn    = f'{an} VaR95'
                 is_sel = (selected_column == tn)
                 if is_sel:
                     line_dict = dict(color='red', width=8)
                 else:
-                    tc = next((t.line.color for t in fig.data if t.name == f'{an} Cum. Returns'), None)
-                    if tc is None:
-                        tc = color_palette[color_index % len(color_palette)]
+                    tc = _color_map.get(an, color_palette[color_index % len(color_palette)])
                     line_dict = dict(color=tc, width=4 if an.startswith('Port') else 2.5,
                                      dash='dot')
-                fig.add_trace(go.Scatter(x=df_final.index, y=vs, name=tn,
+                fig.add_trace(go.Scatter(x=vs.index, y=vs, name=tn,
                                           line=line_dict, legend='legend7'), row=7, col=1)
 
     for row in range(1, 8):
