@@ -138,14 +138,25 @@ def calculate_drawdown(returns_series):
     return (cumulative - rolling_max) / rolling_max
 
 def calculate_rolling_cvar(returns_series, window, tail_pct=0.05):
-    def _cvar(w):
-        n_tail = max(1, int(np.floor(len(w) * tail_pct)))
-        return np.sort(w)[:n_tail].mean()
+    arr   = returns_series.to_numpy(dtype=float)
+    n     = len(arr)
+    out   = np.full(n, np.nan)
     min_p = max(10, window // 2)
-    return returns_series.rolling(window, min_periods=min_p).apply(_cvar, raw=True)
+    for i in range(min_p - 1, n):
+        w      = arr[max(0, i - window + 1): i + 1]
+        n_tail = max(1, int(len(w) * tail_pct))
+        out[i] = np.partition(w, n_tail)[:n_tail].mean()
+    return pd.Series(out, index=returns_series.index)
 
 def _rolling_volatility(returns_series, window):
     return returns_series.rolling(window, min_periods=window // 2).std() * np.sqrt(252)
+
+def _thin(s, max_pts=500):
+    """Downsample una serie/DataFrame a max_pts punti per il rendering."""
+    if len(s) <= max_pts:
+        return s
+    step = max(1, len(s) // max_pts)
+    return s.iloc[::step]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Cache DataFrame
@@ -1710,6 +1721,10 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
     else:
         df_final = df_with_portfolios
 
+    # Versione ridotta per il rendering (max 500 punti per trace)
+    df_plot = _thin(df_final)
+    benchmark_cumulative_returns = _thin(benchmark_cumulative_returns)
+
     fig = make_subplots(
         rows=7, cols=1, shared_xaxes=False, vertical_spacing=0.03,
         row_heights=[0.26, 0.12, 0.12, 0.12, 0.12, 0.13, 0.13],
@@ -1731,7 +1746,8 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
     if benchmark_col in selected_assets:
         bench_name = f'{benchmark_col} Cum. Returns'
         is_sel = (selected_column == bench_name)
-        fig.add_trace(go.Scatter(x=df_final.index, y=benchmark_cumulative_returns,
+        fig.add_trace(go.Scatter(x=benchmark_cumulative_returns.index,
+                                  y=benchmark_cumulative_returns,
                                   name=bench_name,
                                   line=dict(color='red', width=8 if is_sel else 2),
                                   legend='legend'), row=1, col=1)
@@ -1750,7 +1766,7 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
                     first_valid = filtered_df[active].dropna(how='any').index.min()
                     if pd.notna(first_valid):
                         series = series.loc[first_valid:]
-            cum_ret    = (1 + series).cumprod() - 1
+            cum_ret    = _thin((1 + series).cumprod() - 1)
             trace_name = f'{col} Cum. Returns'
             is_sel     = (selected_column == trace_name)
             if is_sel:
@@ -1760,7 +1776,7 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
                 line_dict = dict(color=tc)
                 if col.startswith('Port'):
                     line_dict.update({'width': 4, 'dash': 'solid'})
-            fig.add_trace(go.Scatter(x=series.index, y=cum_ret, name=trace_name,
+            fig.add_trace(go.Scatter(x=cum_ret.index, y=cum_ret, name=trace_name,
                                       line=line_dict, legend='legend'), row=1, col=1)
             color_index += 1
 
@@ -1780,7 +1796,7 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
     # Subplot 2: AKRatio
     color_index = 0
     for col_ir in selected_irs:
-        if col_ir in df_final.columns:
+        if col_ir in df_plot.columns:
             orig = col_ir.replace('_InformationRatio', '')
             is_sel = (selected_column == col_ir)
             if is_sel:
@@ -1788,12 +1804,12 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
             else:
                 tc = _color_map.get(orig, color_palette[color_index % len(color_palette)])
                 line_dict = dict(color=tc, width=4 if orig.startswith('Port') else 2.5)
-            fig.add_trace(go.Scatter(x=df_final.index, y=df_final[col_ir],
+            fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot[col_ir],
                                       name=col_ir.replace('_InformationRatio', '_AKRatio'),
                                       line=line_dict, legend='legend2'), row=2, col=1)
             color_index += 1
     if selected_irs:
-        fig.add_trace(go.Scatter(x=df_final.index, y=[0]*len(df_final), name='Zero Line (IR)',
+        fig.add_trace(go.Scatter(x=df_plot.index, y=[0]*len(df_plot), name='Zero Line (IR)',
                                   line=dict(color='red', dash='solid', width=2),
                                   showlegend=True, legend='legend2'), row=2, col=1)
 
@@ -1802,7 +1818,7 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
         if si:
             an = si.replace('_Sharpe', '')
             sc = f'{an}_SharpeRatio'
-            if sc in df_final.columns:
+            if sc in df_plot.columns:
                 tn    = f'{an} Sharpe Ratio'
                 is_sel = (selected_column == tn)
                 if is_sel:
@@ -1811,7 +1827,7 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
                     tc = _color_map.get(an, color_palette[color_index % len(color_palette)])
                     line_dict = dict(color=tc, dash='solid',
                                      width=4 if an.startswith('Port') else 2.5)
-                fig.add_trace(go.Scatter(x=df_final.index, y=df_final[sc], name=tn,
+                fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot[sc], name=tn,
                                           line=line_dict, legend='legend3'), row=3, col=1)
 
     # Subplot 4: TEV
@@ -1819,7 +1835,7 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
         if ti:
             an = ti.replace('_TEV', '')
             tc_nm = f'{an}_TEV'
-            if tc_nm in df_final.columns:
+            if tc_nm in df_plot.columns:
                 tn    = f'{an} TEV'
                 is_sel = (selected_column == tn)
                 if is_sel:
@@ -1828,7 +1844,7 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
                     tc = _color_map.get(an, color_palette[color_index % len(color_palette)])
                     line_dict = dict(color=tc, dash='dash',
                                      width=4 if an.startswith('Port') else 2.5)
-                fig.add_trace(go.Scatter(x=df_final.index, y=df_final[tc_nm], name=tn,
+                fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot[tc_nm], name=tn,
                                           line=line_dict, legend='legend4'), row=4, col=1)
 
     # Subplot 5: DrawDown
@@ -1836,7 +1852,7 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
         if di:
             an = di.replace('_DD', '')
             if an in df_with_portfolios.columns:
-                dds   = calculate_drawdown(df_with_portfolios[an])
+                dds   = _thin(calculate_drawdown(df_with_portfolios[an]))
                 tn    = f'{an} DrawDown'
                 is_sel = (selected_column == tn)
                 if is_sel:
@@ -1857,7 +1873,7 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
         if vi:
             an = vi.replace('_Vol', '')
             if an in df_with_portfolios.columns:
-                vs    = _rolling_volatility(df_with_portfolios[an], vol_window)
+                vs    = _thin(_rolling_volatility(df_with_portfolios[an], vol_window))
                 tn    = f'{an} Volatilità'
                 is_sel = (selected_column == tn)
                 if is_sel:
@@ -1873,7 +1889,7 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
         if v90:
             an = v90.replace('_VaR90', '')
             if an in df_with_portfolios.columns:
-                vs    = calculate_rolling_cvar(df_with_portfolios[an], vol_window, 0.10)
+                vs    = _thin(calculate_rolling_cvar(df_with_portfolios[an], vol_window, 0.10))
                 tn    = f'{an} VaR90'
                 is_sel = (selected_column == tn)
                 if is_sel:
@@ -1889,7 +1905,7 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
         if v95:
             an = v95.replace('_VaR95', '')
             if an in df_with_portfolios.columns:
-                vs    = calculate_rolling_cvar(df_with_portfolios[an], vol_window, 0.05)
+                vs    = _thin(calculate_rolling_cvar(df_with_portfolios[an], vol_window, 0.05))
                 tn    = f'{an} VaR95'
                 is_sel = (selected_column == tn)
                 if is_sel:
@@ -1912,6 +1928,7 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
     fig.update_yaxes(title_text='VaR',                row=7, col=1)
 
     fig.update_layout(
+        uirevision='graph',
         height=1900, showlegend=True,
         legend=dict(title=dict(text='<b>Asset</b>', font=dict(size=11)),
                     orientation='v', yanchor='top', y=1.0, xanchor='left', x=1.01,
