@@ -171,7 +171,7 @@ def _get_df(json_str):
 # ─────────────────────────────────────────────────────────────────────────────
 # Download worker (background thread)
 # ─────────────────────────────────────────────────────────────────────────────
-DOWNLOAD_TIMEOUT = 15   # timeout corto: i ticker bloccati vengono saltati velocemente
+DOWNLOAD_TIMEOUT = 8    # timeout corto: ticker non trovati su Yahoo saltati in 8s
 
 _DL_STATE  = {'status': 'idle', 'current': 0, 'total': 0, 'errors': []}
 _DL_BUFFER = {}
