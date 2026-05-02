@@ -171,59 +171,39 @@ def _get_df(json_str):
 # ─────────────────────────────────────────────────────────────────────────────
 # Download worker (background thread)
 # ─────────────────────────────────────────────────────────────────────────────
-DOWNLOAD_BATCH_SIZE = 10   # ticker per batch → 18 chiamate invece di 177
-DOWNLOAD_TIMEOUT    = 60   # secondi per batch (più ticker = più tempo)
+DOWNLOAD_TIMEOUT = 40
 
 _DL_STATE  = {'status': 'idle', 'current': 0, 'total': 0, 'errors': []}
 _DL_BUFFER = {}
 _DL_LOCK   = threading.Lock()
+import concurrent.futures
 
 
-def _download_batch(batch_tickers, start_date):
-    """Scarica un gruppo di ticker in una sola chiamata con timeout non bloccante."""
+def _download_single(ticker, start_date):
     result = [None]
     done   = threading.Event()
 
     def _fetch():
         try:
-            result[0] = yf.download(
-                batch_tickers, start=start_date,
-                auto_adjust=True, progress=False, threads=False,
-            )
+            result[0] = yf.download(ticker, start=start_date, auto_adjust=True,
+                                    progress=False, threads=False)
         except Exception as e:
-            print(f"⚠ Batch error: {e}")
+            print(f"⚠ {ticker}: {e}")
         finally:
             done.set()
 
     threading.Thread(target=_fetch, daemon=True).start()
 
     if done.wait(timeout=DOWNLOAD_TIMEOUT):
-        return result[0]
-    print(f"⚠ Timeout batch: {batch_tickers[:3]}…")
+        df = result[0]
+        if df is not None and not df.empty:
+            close = df['Close']
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+            return close.dropna().copy()
+    else:
+        print(f"⚠ Timeout: {ticker}")
     return None
-
-
-def _extract_close(raw, ticker):
-    """Estrae la serie Close da un DataFrame potenzialmente MultiIndex."""
-    if raw is None or raw.empty:
-        return None
-    try:
-        if isinstance(raw.columns, pd.MultiIndex):
-            # yfinance 0.2.x: livello 0 = campo (Close/High/…), livello 1 = ticker
-            if ('Close', ticker) in raw.columns:
-                s = raw[('Close', ticker)]
-            elif (ticker, 'Close') in raw.columns:
-                s = raw[(ticker, 'Close')]
-            else:
-                return None
-        else:
-            s = raw['Close']
-        if isinstance(s, pd.DataFrame):
-            s = s.iloc[:, 0]
-        return s.dropna().copy() if not s.dropna().empty else None
-    except Exception as e:
-        print(f"⚠ Estrazione Close {ticker}: {e}")
-        return None
 
 
 def _download_worker(tickers, descrizione, valuta, start_date='2016-01-01'):
@@ -234,38 +214,47 @@ def _download_worker(tickers, descrizione, valuta, start_date='2016-01-01'):
         _DL_BUFFER = {}
 
     try:
-        # ── 1. FX (batch unico, non conta nel progresso) ──────────────────────
-        fx_raw  = _download_batch(['EURUSD=X', 'EURGBP=X'], start_date)
-        eurusd  = _extract_close(fx_raw, 'EURUSD=X')
-        eurgbp  = _extract_close(fx_raw, 'EURGBP=X')
-
-        # ── 2. Ticker principali in batch di DOWNLOAD_BATCH_SIZE ──────────────
-        all_prices = {}
-        for batch_start in range(0, total, DOWNLOAD_BATCH_SIZE):
-            batch_t = tickers[batch_start: batch_start + DOWNLOAD_BATCH_SIZE]
-            batch_d = descrizione[batch_start: batch_start + DOWNLOAD_BATCH_SIZE]
-            batch_v = valuta[batch_start: batch_start + DOWNLOAD_BATCH_SIZE]
-
-            raw = _download_batch(batch_t, start_date)
-
-            for t, desc, curr in zip(batch_t, batch_d, batch_v):
-                px = _extract_close(raw, t)
-                if px is None:
+        raw = {}
+        all_items = (
+            [('EURUSD=X', '__eurusd__', None), ('EURGBP=X', '__eurgbp__', None)]
+            + list(zip(tickers, descrizione, valuta))
+        )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            future_map = {
+                executor.submit(_download_single, t, start_date): (desc, curr)
+                for t, desc, curr in all_items
+            }
+            for future in concurrent.futures.as_completed(future_map):
+                desc, curr = future_map[future]
+                try:
+                    px = future.result()
+                except Exception as e:
+                    px = None
                     with _DL_LOCK:
-                        _DL_STATE['errors'].append(f"{desc}: nessun dato")
-                    continue
-                if curr == 'USD' and eurusd is not None:
-                    px = px / eurusd.reindex(px.index).ffill()
-                elif curr == 'GBP' and eurgbp is not None:
-                    px = px / eurgbp.reindex(px.index).ffill()
-                all_prices[desc] = px
+                        _DL_STATE['errors'].append(str(e))
+                if desc not in ('__eurusd__', '__eurgbp__'):
+                    raw[desc] = (px, curr)
+                    with _DL_LOCK:
+                        _DL_STATE['current'] = min(_DL_STATE['current'] + 1, total)
+                else:
+                    raw[desc] = px
 
-            with _DL_LOCK:
-                _DL_STATE['current'] = min(batch_start + len(batch_t), total)
+        eurusd = raw.get('__eurusd__')
+        eurgbp = raw.get('__eurgbp__')
 
-            time.sleep(0.3)   # pausa cortese verso Yahoo
+        all_prices = {}
+        for desc, (px, curr) in ((k, v) for k, v in raw.items()
+                                 if k not in ('__eurusd__', '__eurgbp__')):
+            if px is None:
+                with _DL_LOCK:
+                    _DL_STATE['errors'].append(f"{desc}: nessun dato")
+                continue
+            if curr == 'USD' and eurusd is not None:
+                px = px / eurusd.reindex(px.index).ffill()
+            elif curr == 'GBP' and eurgbp is not None:
+                px = px / eurgbp.reindex(px.index).ffill()
+            all_prices[desc] = px
 
-        # ── 3. Assembla DataFrame ─────────────────────────────────────────────
         if all_prices:
             original_prices = pd.DataFrame(all_prices)
             original_prices.index = pd.to_datetime(original_prices.index)
@@ -275,7 +264,7 @@ def _download_worker(tickers, descrizione, valuta, start_date='2016-01-01'):
                 _DL_BUFFER['original_prices'] = original_prices
                 _DL_BUFFER['close_returns']   = close_returns
                 _DL_STATE['status'] = 'done'
-            print(f"✓ Download completato: {len(all_prices)}/{total} asset")
+            print(f"✓ Download completato: {len(all_prices)} asset")
         else:
             with _DL_LOCK:
                 _DL_STATE['status'] = 'error'
