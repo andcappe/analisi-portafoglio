@@ -171,28 +171,38 @@ def _get_df(json_str):
 # ─────────────────────────────────────────────────────────────────────────────
 # Download worker (background thread)
 # ─────────────────────────────────────────────────────────────────────────────
-DOWNLOAD_TIMEOUT = 300  # 5 minuti per tutti i ticker in blocco
+DOWNLOAD_TIMEOUT = 15   # timeout corto: i ticker bloccati vengono saltati velocemente
 
 _DL_STATE  = {'status': 'idle', 'current': 0, 'total': 0, 'errors': []}
 _DL_BUFFER = {}
 _DL_LOCK   = threading.Lock()
 
 
-def _get_close(raw, sym):
-    """Estrae la colonna Close da un DataFrame MultiIndex di yfinance."""
-    try:
-        if isinstance(raw.columns, pd.MultiIndex):
-            s = raw['Close'][sym] if sym in raw['Close'].columns else None
-        else:
-            s = raw['Close']
-        if s is None:
-            return None
-        if isinstance(s, pd.DataFrame):
-            s = s.iloc[:, 0]
-        s = s.dropna()
-        return s if not s.empty else None
-    except Exception:
-        return None
+def _download_single(ticker, start_date):
+    result = [None]
+    done   = threading.Event()
+
+    def _fetch():
+        try:
+            result[0] = yf.download(ticker, start=start_date, auto_adjust=True,
+                                    progress=False, threads=False)
+        except Exception as e:
+            print(f"⚠ {ticker}: {e}")
+        finally:
+            done.set()
+
+    threading.Thread(target=_fetch, daemon=True).start()
+
+    if done.wait(timeout=DOWNLOAD_TIMEOUT):
+        df = result[0]
+        if df is not None and not df.empty:
+            close = df['Close']
+            if isinstance(close, pd.DataFrame):
+                close = close.iloc[:, 0]
+            return close.dropna().copy()
+    else:
+        print(f"⚠ Timeout ({DOWNLOAD_TIMEOUT}s): {ticker}")
+    return None
 
 
 def _download_worker(tickers, descrizione, valuta, start_date='2016-01-01'):
@@ -203,38 +213,14 @@ def _download_worker(tickers, descrizione, valuta, start_date='2016-01-01'):
         _DL_BUFFER = {}
 
     try:
-        # Unica chiamata con tutti i ticker + FX — yfinance gestisce il threading
-        all_syms = ['EURUSD=X', 'EURGBP=X'] + list(tickers)
-        result = [None]
-        done   = threading.Event()
-
-        def _fetch():
-            try:
-                result[0] = yf.download(
-                    all_syms, start=start_date,
-                    auto_adjust=True, progress=False, threads=True,
-                )
-            except Exception as e:
-                print(f"⚠ yf.download error: {e}")
-            finally:
-                done.set()
-
-        threading.Thread(target=_fetch, daemon=True).start()
-        done.wait(timeout=DOWNLOAD_TIMEOUT)
-
-        raw = result[0]
-        if raw is None or raw.empty:
-            with _DL_LOCK:
-                _DL_STATE['status'] = 'error'
-            print("❌ Download fallito: nessun dato")
-            return
-
-        eurusd = _get_close(raw, 'EURUSD=X')
-        eurgbp = _get_close(raw, 'EURGBP=X')
+        # FX e ticker principali scaricati uno per uno in sequenza
+        # (semplice, affidabile, progress bar reale)
+        eurusd = _download_single('EURUSD=X', start_date)
+        eurgbp = _download_single('EURGBP=X', start_date)
 
         all_prices = {}
         for i, (t, desc, curr) in enumerate(zip(tickers, descrizione, valuta)):
-            px = _get_close(raw, t)
+            px = _download_single(t, start_date)
             if px is None:
                 with _DL_LOCK:
                     _DL_STATE['errors'].append(f"{desc}: nessun dato")
