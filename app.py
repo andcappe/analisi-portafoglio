@@ -171,87 +171,105 @@ def _get_df(json_str):
 # ─────────────────────────────────────────────────────────────────────────────
 # Download worker (background thread)
 # ─────────────────────────────────────────────────────────────────────────────
-DOWNLOAD_TIMEOUT = 8    # timeout corto: ticker non trovati su Yahoo saltati in 8s
+DOWNLOAD_BATCH_SIZE = 10   # ticker per batch — riduci se Yahoo dà errori
 
 _DL_STATE  = {'status': 'idle', 'current': 0, 'total': 0, 'errors': []}
 _DL_BUFFER = {}
 _DL_LOCK   = threading.Lock()
 
 
-def _download_single(ticker, start_date):
-    result = [None]
-    done   = threading.Event()
-
-    def _fetch():
-        try:
-            result[0] = yf.download(ticker, start=start_date, auto_adjust=True,
-                                    progress=False, threads=False)
-        except Exception as e:
-            print(f"⚠ {ticker}: {e}")
-        finally:
-            done.set()
-
-    threading.Thread(target=_fetch, daemon=True).start()
-
-    if done.wait(timeout=DOWNLOAD_TIMEOUT):
-        df = result[0]
-        if df is not None and not df.empty:
-            close = df['Close']
-            if isinstance(close, pd.DataFrame):
-                close = close.iloc[:, 0]
-            return close.dropna().copy()
-    else:
-        print(f"⚠ Timeout ({DOWNLOAD_TIMEOUT}s): {ticker}")
-    return None
-
-
 def _download_worker(tickers, descrizione, valuta, start_date='2016-01-01'):
     global _DL_STATE, _DL_BUFFER
+
     total = len(tickers)
     with _DL_LOCK:
-        _DL_STATE  = {'status': 'running', 'current': 0, 'total': total, 'errors': []}
+        _DL_STATE = {'status': 'running', 'current': 0, 'total': total, 'errors': []}
         _DL_BUFFER = {}
 
+    # 1) Scarica valute per la conversione
+    fx = None
     try:
-        # FX e ticker principali scaricati uno per uno in sequenza
-        # (semplice, affidabile, progress bar reale)
-        eurusd = _download_single('EURUSD=X', start_date)
-        eurgbp = _download_single('EURGBP=X', start_date)
-
-        all_prices = {}
-        for i, (t, desc, curr) in enumerate(zip(tickers, descrizione, valuta)):
-            px = _download_single(t, start_date)
-            if px is None:
-                with _DL_LOCK:
-                    _DL_STATE['errors'].append(f"{desc}: nessun dato")
-            else:
-                if curr == 'USD' and eurusd is not None:
-                    px = px / eurusd.reindex(px.index).ffill()
-                elif curr == 'GBP' and eurgbp is not None:
-                    px = px / eurgbp.reindex(px.index).ffill()
-                all_prices[desc] = px
-            with _DL_LOCK:
-                _DL_STATE['current'] = i + 1
-
-        if all_prices:
-            original_prices = pd.DataFrame(all_prices)
-            original_prices.index = pd.to_datetime(original_prices.index)
-            original_prices = original_prices.ffill()
-            close_returns = original_prices.pct_change(fill_method=None)
-            with _DL_LOCK:
-                _DL_BUFFER['original_prices'] = original_prices
-                _DL_BUFFER['close_returns']   = close_returns
-                _DL_STATE['status'] = 'done'
-            print(f"✓ Download completato: {len(all_prices)} asset")
-        else:
-            with _DL_LOCK:
-                _DL_STATE['status'] = 'error'
-            print("❌ Download fallito: nessun dato disponibile")
-
+        fx = yf.download(['EURUSD=X', 'EURGBP=X'], start=start_date,
+                         group_by='ticker', auto_adjust=True, progress=False)
     except Exception as e:
-        print(f"❌ Download worker crash: {e}")
+        print(f"⚠ FX download fallito: {e}")
+
+    def _fx_series(name):
+        if fx is None or fx.empty:
+            return None
+        try:
+            return fx[(name, 'Close')] if isinstance(fx.columns, pd.MultiIndex) \
+                   else fx['Close']
+        except Exception:
+            return None
+
+    eurusd = _fx_series('EURUSD=X')
+    eurgbp = _fx_series('EURGBP=X')
+
+    all_prices = {}
+
+    # 2) Batch sequenziali da DOWNLOAD_BATCH_SIZE ticker
+    for batch_start in range(0, total, DOWNLOAD_BATCH_SIZE):
+        batch_t = tickers[batch_start: batch_start + DOWNLOAD_BATCH_SIZE]
+        batch_d = descrizione[batch_start: batch_start + DOWNLOAD_BATCH_SIZE]
+        batch_v = valuta[batch_start: batch_start + DOWNLOAD_BATCH_SIZE]
+
+        try:
+            raw = yf.download(batch_t, start=start_date, group_by='ticker',
+                              auto_adjust=True, progress=False)
+            if raw.empty:
+                raise ValueError("Risposta vuota da Yahoo")
+
+            for j, t in enumerate(batch_t):
+                desc = batch_d[j]
+                curr = batch_v[j]
+                try:
+                    if isinstance(raw.columns, pd.MultiIndex):
+                        if (t, 'Close') not in raw.columns:
+                            continue
+                        px = raw[(t, 'Close')].copy()
+                    else:
+                        if 'Close' not in raw.columns:
+                            continue
+                        px = raw['Close'].copy()
+
+                    px = px.ffill()
+
+                    if curr == 'USD' and eurusd is not None:
+                        px = px / eurusd.reindex(px.index).ffill()
+                    elif curr == 'GBP' and eurgbp is not None:
+                        px = px / eurgbp.reindex(px.index).ffill()
+
+                    all_prices[desc] = px
+
+                except Exception as e2:
+                    with _DL_LOCK:
+                        _DL_STATE['errors'].append(f"{t}: {e2}")
+
+        except Exception as e:
+            with _DL_LOCK:
+                _DL_STATE['errors'].append(f"Batch {batch_start}: {e}")
+
+        with _DL_LOCK:
+            _DL_STATE['current'] = min(batch_start + DOWNLOAD_BATCH_SIZE, total)
+
+        time.sleep(0.3)
+
+    # 3) Assembla DataFrame finali
+    if all_prices:
+        original_prices = pd.DataFrame(all_prices)
+        original_prices.index = pd.to_datetime(original_prices.index)
+        original_prices = original_prices.ffill()
+        close_returns = original_prices.pct_change(fill_method=None)
+        with _DL_LOCK:
+            _DL_BUFFER['original_prices'] = original_prices
+            _DL_BUFFER['close_returns']   = close_returns
+            _DL_STATE['status'] = 'done'
+        print(f"✓ Download completato: {len(all_prices)} asset")
+    else:
         with _DL_LOCK:
             _DL_STATE['status'] = 'error'
+        print("❌ Download fallito: nessun dato disponibile")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
