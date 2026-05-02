@@ -171,39 +171,28 @@ def _get_df(json_str):
 # ─────────────────────────────────────────────────────────────────────────────
 # Download worker (background thread)
 # ─────────────────────────────────────────────────────────────────────────────
-DOWNLOAD_TIMEOUT = 40
+DOWNLOAD_TIMEOUT = 300  # 5 minuti per tutti i ticker in blocco
 
 _DL_STATE  = {'status': 'idle', 'current': 0, 'total': 0, 'errors': []}
 _DL_BUFFER = {}
 _DL_LOCK   = threading.Lock()
-import concurrent.futures
 
 
-def _download_single(ticker, start_date):
-    result = [None]
-    done   = threading.Event()
-
-    def _fetch():
-        try:
-            result[0] = yf.download(ticker, start=start_date, auto_adjust=True,
-                                    progress=False, threads=False)
-        except Exception as e:
-            print(f"⚠ {ticker}: {e}")
-        finally:
-            done.set()
-
-    threading.Thread(target=_fetch, daemon=True).start()
-
-    if done.wait(timeout=DOWNLOAD_TIMEOUT):
-        df = result[0]
-        if df is not None and not df.empty:
-            close = df['Close']
-            if isinstance(close, pd.DataFrame):
-                close = close.iloc[:, 0]
-            return close.dropna().copy()
-    else:
-        print(f"⚠ Timeout: {ticker}")
-    return None
+def _get_close(raw, sym):
+    """Estrae la colonna Close da un DataFrame MultiIndex di yfinance."""
+    try:
+        if isinstance(raw.columns, pd.MultiIndex):
+            s = raw['Close'][sym] if sym in raw['Close'].columns else None
+        else:
+            s = raw['Close']
+        if s is None:
+            return None
+        if isinstance(s, pd.DataFrame):
+            s = s.iloc[:, 0]
+        s = s.dropna()
+        return s if not s.empty else None
+    except Exception:
+        return None
 
 
 def _download_worker(tickers, descrizione, valuta, start_date='2016-01-01'):
@@ -214,46 +203,49 @@ def _download_worker(tickers, descrizione, valuta, start_date='2016-01-01'):
         _DL_BUFFER = {}
 
     try:
-        raw = {}
-        all_items = (
-            [('EURUSD=X', '__eurusd__', None), ('EURGBP=X', '__eurgbp__', None)]
-            + list(zip(tickers, descrizione, valuta))
-        )
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-            future_map = {
-                executor.submit(_download_single, t, start_date): (desc, curr)
-                for t, desc, curr in all_items
-            }
-            for future in concurrent.futures.as_completed(future_map):
-                desc, curr = future_map[future]
-                try:
-                    px = future.result()
-                except Exception as e:
-                    px = None
-                    with _DL_LOCK:
-                        _DL_STATE['errors'].append(str(e))
-                if desc not in ('__eurusd__', '__eurgbp__'):
-                    raw[desc] = (px, curr)
-                    with _DL_LOCK:
-                        _DL_STATE['current'] = min(_DL_STATE['current'] + 1, total)
-                else:
-                    raw[desc] = px
+        # Unica chiamata con tutti i ticker + FX — yfinance gestisce il threading
+        all_syms = ['EURUSD=X', 'EURGBP=X'] + list(tickers)
+        result = [None]
+        done   = threading.Event()
 
-        eurusd = raw.get('__eurusd__')
-        eurgbp = raw.get('__eurgbp__')
+        def _fetch():
+            try:
+                result[0] = yf.download(
+                    all_syms, start=start_date,
+                    auto_adjust=True, progress=False, threads=True,
+                )
+            except Exception as e:
+                print(f"⚠ yf.download error: {e}")
+            finally:
+                done.set()
+
+        threading.Thread(target=_fetch, daemon=True).start()
+        done.wait(timeout=DOWNLOAD_TIMEOUT)
+
+        raw = result[0]
+        if raw is None or raw.empty:
+            with _DL_LOCK:
+                _DL_STATE['status'] = 'error'
+            print("❌ Download fallito: nessun dato")
+            return
+
+        eurusd = _get_close(raw, 'EURUSD=X')
+        eurgbp = _get_close(raw, 'EURGBP=X')
 
         all_prices = {}
-        for desc, (px, curr) in ((k, v) for k, v in raw.items()
-                                 if k not in ('__eurusd__', '__eurgbp__')):
+        for i, (t, desc, curr) in enumerate(zip(tickers, descrizione, valuta)):
+            px = _get_close(raw, t)
             if px is None:
                 with _DL_LOCK:
                     _DL_STATE['errors'].append(f"{desc}: nessun dato")
-                continue
-            if curr == 'USD' and eurusd is not None:
-                px = px / eurusd.reindex(px.index).ffill()
-            elif curr == 'GBP' and eurgbp is not None:
-                px = px / eurgbp.reindex(px.index).ffill()
-            all_prices[desc] = px
+            else:
+                if curr == 'USD' and eurusd is not None:
+                    px = px / eurusd.reindex(px.index).ffill()
+                elif curr == 'GBP' and eurgbp is not None:
+                    px = px / eurgbp.reindex(px.index).ffill()
+                all_prices[desc] = px
+            with _DL_LOCK:
+                _DL_STATE['current'] = i + 1
 
         if all_prices:
             original_prices = pd.DataFrame(all_prices)
