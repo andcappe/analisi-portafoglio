@@ -1464,6 +1464,108 @@ def collect_selected_assets(all_values):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Callbacks: pulsanti cancella colonna
+# ─────────────────────────────────────────────────────────────────────────────
+@app.callback(
+    Output({'type': 'graph-select-checkbox', 'index': ALL}, 'value'),
+    Input('deselect-all-tickers', 'n_clicks'),
+    State({'type': 'graph-select-checkbox', 'index': ALL}, 'value'),
+    prevent_initial_call=True,
+)
+def deselect_all_tickers(n, vals):
+    if not n: raise PreventUpdate
+    return [[] for _ in vals]
+
+@app.callback(
+    Output({'type': 'ir-select-checkbox', 'index': ALL}, 'value'),
+    Input('deselect-all-ir', 'n_clicks'),
+    State({'type': 'ir-select-checkbox', 'index': ALL}, 'value'),
+    prevent_initial_call=True,
+)
+def deselect_all_ir(n, vals):
+    if not n: raise PreventUpdate
+    return [[] for _ in vals]
+
+@app.callback(
+    Output({'type': 'sharpe-select-checkbox', 'index': ALL}, 'value'),
+    Input('deselect-all-sharpe', 'n_clicks'),
+    State({'type': 'sharpe-select-checkbox', 'index': ALL}, 'value'),
+    prevent_initial_call=True,
+)
+def deselect_all_sharpe(n, vals):
+    if not n: raise PreventUpdate
+    return [[] for _ in vals]
+
+@app.callback(
+    Output({'type': 'tev-select-checkbox', 'index': ALL}, 'value'),
+    Input('deselect-all-tev', 'n_clicks'),
+    State({'type': 'tev-select-checkbox', 'index': ALL}, 'value'),
+    prevent_initial_call=True,
+)
+def deselect_all_tev(n, vals):
+    if not n: raise PreventUpdate
+    return [[] for _ in vals]
+
+@app.callback(
+    Output({'type': 'dd-select-checkbox', 'index': ALL}, 'value'),
+    Input('deselect-all-dd', 'n_clicks'),
+    State({'type': 'dd-select-checkbox', 'index': ALL}, 'value'),
+    prevent_initial_call=True,
+)
+def deselect_all_dd(n, vals):
+    if not n: raise PreventUpdate
+    return [[] for _ in vals]
+
+@app.callback(
+    Output({'type': 'vol-select-checkbox', 'index': ALL}, 'value'),
+    Input('deselect-all-vol', 'n_clicks'),
+    State({'type': 'vol-select-checkbox', 'index': ALL}, 'value'),
+    prevent_initial_call=True,
+)
+def deselect_all_vol(n, vals):
+    if not n: raise PreventUpdate
+    return [[] for _ in vals]
+
+@app.callback(
+    Output({'type': 'var90-select-checkbox', 'index': ALL}, 'value'),
+    Input('deselect-all-var90', 'n_clicks'),
+    State({'type': 'var90-select-checkbox', 'index': ALL}, 'value'),
+    prevent_initial_call=True,
+)
+def deselect_all_var90(n, vals):
+    if not n: raise PreventUpdate
+    return [[] for _ in vals]
+
+@app.callback(
+    Output({'type': 'var95-select-checkbox', 'index': ALL}, 'value'),
+    Input('deselect-all-var95', 'n_clicks'),
+    State({'type': 'var95-select-checkbox', 'index': ALL}, 'value'),
+    prevent_initial_call=True,
+)
+def deselect_all_var95(n, vals):
+    if not n: raise PreventUpdate
+    return [[] for _ in vals]
+
+@app.callback(
+    Output({'type': 'weight-input', 'index': ALL}, 'value'),
+    Input('reset-p1-tab1', 'n_clicks'),
+    Input('reset-p2-tab1', 'n_clicks'),
+    Input('reset-p3-tab1', 'n_clicks'),
+    State({'type': 'weight-input', 'index': ALL}, 'id'),
+    State({'type': 'weight-input', 'index': ALL}, 'value'),
+    prevent_initial_call=True,
+)
+def reset_portfolio_weights(n1, n2, n3, all_ids, all_vals):
+    ctx = callback_context
+    triggered = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else ''
+    prefix = {'reset-p1-tab1': 'P1-', 'reset-p2-tab1': 'P2-', 'reset-p3-tab1': 'P3-'}.get(triggered)
+    if not prefix:
+        raise PreventUpdate
+    return [0 if inp_id['index'].startswith(prefix) else val
+            for inp_id, val in zip(all_ids, all_vals)]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Callback: somme pesi
 # ─────────────────────────────────────────────────────────────────────────────
 @app.callback(
