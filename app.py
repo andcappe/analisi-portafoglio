@@ -10,6 +10,7 @@ import time
 import threading
 import os
 import uuid
+import pickle
 import requests
 from pathlib import Path
 from datetime import datetime
@@ -138,15 +139,11 @@ def calculate_drawdown(returns_series):
     return (cumulative - rolling_max) / rolling_max
 
 def calculate_rolling_cvar(returns_series, window, tail_pct=0.05):
-    arr   = returns_series.to_numpy(dtype=float)
-    n     = len(arr)
-    out   = np.full(n, np.nan)
     min_p = max(10, window // 2)
-    for i in range(min_p - 1, n):
-        w      = arr[max(0, i - window + 1): i + 1]
+    def _cvar(w):
         n_tail = max(1, int(len(w) * tail_pct))
-        out[i] = np.partition(w, n_tail)[:n_tail].mean()
-    return pd.Series(out, index=returns_series.index)
+        return np.partition(w, n_tail)[:n_tail].mean()
+    return returns_series.rolling(window, min_periods=min_p).apply(_cvar, raw=True)
 
 def _rolling_volatility(returns_series, window):
     return returns_series.rolling(window, min_periods=window // 2).std() * np.sqrt(252)
@@ -180,107 +177,130 @@ def _get_df(json_str):
     return _DF_CACHE[key].copy()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Download worker (background thread)
+# Cache giornaliera su disco
 # ─────────────────────────────────────────────────────────────────────────────
-DOWNLOAD_BATCH_SIZE = 10   # ticker per batch — riduci se Yahoo dà errori
+# ─────────────────────────────────────────────────────────────────────────────
+# Dati di mercato — download + persistenza su disco
+# ─────────────────────────────────────────────────────────────────────────────
+DOWNLOAD_BATCH_SIZE = 10
 
 _DL_STATE  = {'status': 'idle', 'current': 0, 'total': 0, 'errors': []}
-_DL_BUFFER = {}
+_DL_BUFFER: dict = {}
 _DL_LOCK   = threading.Lock()
 
 
-def _download_worker(tickers, descrizione, valuta, start_date='2016-01-01'):
-    global _DL_STATE, _DL_BUFFER
+def _build_ticker_list():
+    df   = pd.read_excel(_XLSX)
+    cols = df.columns.tolist()
+    return list(df[cols[0]]), list(df[cols[1]]), list(df[cols[2]])
 
+
+def _do_download(tickers, descrizione, valuta, start_date):
+    """Scarica da Yahoo, salva market_data.pkl e aggiorna _DL_BUFFER."""
+    global _DL_STATE, _DL_BUFFER
     total = len(tickers)
     with _DL_LOCK:
         _DL_STATE = {'status': 'running', 'current': 0, 'total': total, 'errors': []}
-        _DL_BUFFER = {}
 
-    # 1) Scarica valute per la conversione
+    # Proxy e User-Agent da variabili d'ambiente (configura su Render se Yahoo blocca)
+    _proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy') or None
+    _ua    = (os.environ.get('YF_USER_AGENT') or
+              'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+              'AppleWebKit/537.36 (KHTML, like Gecko) '
+              'Chrome/124.0.0.0 Safari/537.36')
+
+    _dl_kwargs = dict(auto_adjust=True, progress=False)
+    if _proxy:
+        _dl_kwargs['proxy'] = _proxy
+        print(f"▶ Download via proxy: {_proxy.split('@')[-1]}")
+
+    # Patch User-Agent sulla sessione requests usata da yfinance
+    try:
+        import yfinance.data as _yfd
+        if hasattr(_yfd, 'YfData'):
+            _yfd.YfData._headers = {'User-Agent': _ua}
+    except Exception:
+        pass
+
+    # FX
     fx = None
     try:
         fx = yf.download(['EURUSD=X', 'EURGBP=X'], start=start_date,
-                         group_by='ticker', auto_adjust=True, progress=False)
+                         group_by='ticker', **_dl_kwargs)
     except Exception as e:
         print(f"⚠ FX download fallito: {e}")
 
-    def _fx_series(name):
+    def _fx(name):
         if fx is None or fx.empty:
             return None
         try:
-            return fx[(name, 'Close')] if isinstance(fx.columns, pd.MultiIndex) \
-                   else fx['Close']
+            return fx[(name, 'Close')] if isinstance(fx.columns, pd.MultiIndex) else fx['Close']
         except Exception:
             return None
 
-    eurusd = _fx_series('EURUSD=X')
-    eurgbp = _fx_series('EURGBP=X')
-
+    eurusd, eurgbp = _fx('EURUSD=X'), _fx('EURGBP=X')
     all_prices = {}
 
-    # 2) Batch sequenziali da DOWNLOAD_BATCH_SIZE ticker
-    for batch_start in range(0, total, DOWNLOAD_BATCH_SIZE):
-        batch_t = tickers[batch_start: batch_start + DOWNLOAD_BATCH_SIZE]
-        batch_d = descrizione[batch_start: batch_start + DOWNLOAD_BATCH_SIZE]
-        batch_v = valuta[batch_start: batch_start + DOWNLOAD_BATCH_SIZE]
-
+    for i in range(0, total, DOWNLOAD_BATCH_SIZE):
+        bt = tickers[i:i + DOWNLOAD_BATCH_SIZE]
+        bd = descrizione[i:i + DOWNLOAD_BATCH_SIZE]
+        bv = valuta[i:i + DOWNLOAD_BATCH_SIZE]
         try:
-            raw = yf.download(batch_t, start=start_date, group_by='ticker',
-                              auto_adjust=True, progress=False)
+            raw = yf.download(bt, start=start_date, group_by='ticker', **_dl_kwargs)
             if raw.empty:
-                raise ValueError("Risposta vuota da Yahoo")
-
-            for j, t in enumerate(batch_t):
-                desc = batch_d[j]
-                curr = batch_v[j]
+                raise ValueError("risposta vuota")
+            for j, t in enumerate(bt):
+                desc, curr = bd[j], bv[j]
                 try:
-                    if isinstance(raw.columns, pd.MultiIndex):
-                        if (t, 'Close') not in raw.columns:
-                            continue
-                        px = raw[(t, 'Close')].copy()
-                    else:
-                        if 'Close' not in raw.columns:
-                            continue
-                        px = raw['Close'].copy()
-
+                    px = (raw[(t, 'Close')].copy() if isinstance(raw.columns, pd.MultiIndex)
+                          else raw['Close'].copy())
                     px = px.ffill()
-
                     if curr == 'USD' and eurusd is not None:
                         px = px / eurusd.reindex(px.index).ffill()
                     elif curr == 'GBP' and eurgbp is not None:
                         px = px / eurgbp.reindex(px.index).ffill()
-
                     all_prices[desc] = px
-
                 except Exception as e2:
                     with _DL_LOCK:
                         _DL_STATE['errors'].append(f"{t}: {e2}")
-
         except Exception as e:
             with _DL_LOCK:
-                _DL_STATE['errors'].append(f"Batch {batch_start}: {e}")
-
+                _DL_STATE['errors'].append(f"Batch {i}: {e}")
         with _DL_LOCK:
-            _DL_STATE['current'] = min(batch_start + DOWNLOAD_BATCH_SIZE, total)
-
+            _DL_STATE['current'] = min(i + DOWNLOAD_BATCH_SIZE, total)
         time.sleep(0.3)
 
-    # 3) Assembla DataFrame finali
-    if all_prices:
-        original_prices = pd.DataFrame(all_prices)
-        original_prices.index = pd.to_datetime(original_prices.index)
-        original_prices = original_prices.ffill()
-        close_returns = original_prices.pct_change(fill_method=None)
-        with _DL_LOCK:
-            _DL_BUFFER['original_prices'] = original_prices
-            _DL_BUFFER['close_returns']   = close_returns
-            _DL_STATE['status'] = 'done'
-        print(f"✓ Download completato: {len(all_prices)} asset")
-    else:
+    if not all_prices:
         with _DL_LOCK:
             _DL_STATE['status'] = 'error'
-        print("❌ Download fallito: nessun dato disponibile")
+        print("❌ Download fallito: nessun dato")
+        return
+
+    original_prices = pd.DataFrame(all_prices)
+    original_prices.index = pd.to_datetime(original_prices.index)
+    original_prices = original_prices.ffill()
+    close_returns   = original_prices.pct_change(fill_method=None)
+    ticker_map      = {descrizione[i]: tickers[i] for i in range(len(tickers))}
+    saved_at        = datetime.now().strftime('%d/%m/%Y %H:%M')
+
+    data = {
+        'date':            datetime.now().strftime('%Y-%m-%d'),
+        'saved_at':        saved_at,
+        'ticker_map':      ticker_map,
+        'original_prices': original_prices,
+        'close_returns':   close_returns,
+    }
+    try:
+        with open(_MARKET_DATA_FILE, 'wb') as f:
+            pickle.dump(data, f)
+        print(f"✓ market_data.pkl salvato — {len(all_prices)} asset — {saved_at}")
+    except Exception as e:
+        print(f"⚠ Salvataggio su disco fallito: {e}")
+
+    with _DL_LOCK:
+        _DL_BUFFER.update(data)
+        _DL_STATE['status']  = 'done'
+        _DL_STATE['current'] = total
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -308,7 +328,8 @@ def load_ticker_names_only():
 # ─────────────────────────────────────────────────────────────────────────────
 SESSIONS_DIR = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sessions'))
 SESSIONS_DIR.mkdir(exist_ok=True)
-_INDEX_FILE = SESSIONS_DIR / 'index.json'
+_INDEX_FILE       = SESSIONS_DIR / 'index.json'
+_MARKET_DATA_FILE = SESSIONS_DIR / 'market_data.pkl'
 
 CLIENT_SESSION_STORES = [
     "weights-store-P1",
@@ -798,18 +819,23 @@ app.layout = html.Div([
 
     # ── Barra comandi ─────────────────────────────────────────────────────────
     html.Div([
-        # 1. Carica Dati
+        # 1. Aggiorna dati
         dcc.Loading(type='circle', color='#007755', children=[
-            html.Button('▶ Carica Dati', id='load-data-button', n_clicks=0,
+            html.Button('⟳ Aggiorna', id='refresh-data-btn', n_clicks=0,
+                        title='Forza nuovo download da Yahoo Finance',
                         style={'background-color': '#007755', 'color': 'white',
                                'border': 'none', 'padding': '7px 16px',
                                'border-radius': '4px', 'cursor': 'pointer',
                                'font-weight': 'bold', 'font-size': '12px',
-                               'margin-right': '8px'}),
+                               'margin-right': '6px'}),
         ]),
+        html.Span(id='data-last-updated',
+                  style={'font-size': '10px', 'color': '#6b7a99',
+                         'font-style': 'italic', 'margin-right': '12px',
+                         'align-self': 'center', 'white-space': 'nowrap'}),
         # 2. Sessioni
         get_session_panel_layout(),
-        # 3. Upload
+        # 3. Upload file custom
         dcc.Upload(
             id='upload-data',
             children=html.Div(['Trascina il tuo file']),
@@ -825,33 +851,15 @@ app.layout = html.Div([
                            'border-radius': '4px', 'cursor': 'pointer',
                            'background': '#f0f4fb', 'border': '1px solid #c0d0e8',
                            'color': '#1a3a5c', 'margin-right': '8px'}),
-        # delete-column-button: nascosto ma necessario per il callback
-        html.Button(id='delete-column-button', n_clicks=0,
-                    style={'display': 'none'}),
-        # Indicatori progresso (compatti)
-        html.Div([
-            html.Div(id='dl-progress-text',
-                     style={'font-size': '10px', 'color': '#007755'}),
-            html.Div(html.Div(id='dl-progress-fill',
-                              style={'height': '4px', 'background': '#007755',
-                                     'border-radius': '2px', 'width': '0%',
-                                     'transition': 'width 0.4s ease'}),
-                     id='dl-progress-bar-container',
-                     style={'width': '120px', 'background': '#ddd',
-                            'border-radius': '2px', 'display': 'none',
-                            'margin-top': '2px'}),
-        ]),
-        # Loading invisibili (servono ai callback)
-        html.Div(id='download-status',  style={'display': 'none'}),
-        html.Div(id='upload-status',    style={'display': 'none'}),
+        html.Button(id='delete-column-button', n_clicks=0, style={'display': 'none'}),
+        html.Div(id='upload-status', style={'display': 'none'}),
     ], style={'display': 'flex', 'align-items': 'center',
               'font-size': '10px', 'position': 'relative',
               'padding': '6px 0', 'flex-wrap': 'wrap', 'gap': '2px'}),
 
     # ── Stores ───────────────────────────────────────────────────────────────
-    dcc.Interval(id='dl-poll-interval', interval=800, n_intervals=0, disabled=True),
+    dcc.Interval(id='refresh-poll-interval', interval=1000, n_intervals=0, disabled=True),
     dcc.Store(id='asset-checklist',         data=[]),
-    dcc.Store(id='data-loaded-flag',        data=False),
     dcc.Store(id='stock-data',              data=None),
     dcc.Store(id='original-prices-data',    data=None),
     dcc.Store(id='ticker-map-store',        data={}),
@@ -861,9 +869,10 @@ app.layout = html.Div([
     dcc.Store(id='weights-store-P3',        data={}),
     dcc.Store(id='global-assets-selected',  data=[]),
     dcc.Store(id='tab1-slider-store',       data=None),
+    dcc.Store(id='custom-tickers-store',    data=None),
     dcc.Download(id='download-data'),
 
-    # ── Modale progresso download ─────────────────────────────────────────────
+    # ── Modale progresso aggiornamento ───────────────────────────────────────
     html.Div([
         html.Div([
             # Intestazione
@@ -871,7 +880,7 @@ app.layout = html.Div([
                 html.Div([
                     html.I(className='fas fa-chart-line',
                            style={'marginRight': '8px', 'color': '#007755'}),
-                    html.Span('Caricamento Dati di Mercato', style={
+                    html.Span('Aggiornamento Dati di Mercato', style={
                         'fontFamily': "'Playfair Display', serif",
                         'fontSize': '1.05rem', 'fontWeight': '700',
                         'color': '#1a3a5c',
@@ -920,48 +929,66 @@ app.layout = html.Div([
 # Callback: inizializzazione + upload
 # ─────────────────────────────────────────────────────────────────────────────
 @app.callback(
-    Output('upload-status',          'children'),
-    Output('asset-checklist',        'data'),
-    Output('stock-data',             'data'),
-    Output('original-prices-data',   'data'),
+    Output('upload-status',           'children'),
+    Output('asset-checklist',         'data'),
+    Output('stock-data',              'data'),
+    Output('original-prices-data',    'data'),
     Output('insufficient-data-store', 'data'),
-    Output('ticker-map-store',       'data'),
+    Output('ticker-map-store',        'data'),
+    Output('data-last-updated',       'children'),
+    Output('custom-tickers-store',    'data'),
     Input('upload-data', 'contents'),
     State('upload-data', 'filename'),
-    State('stock-data',  'data'),
 )
-def update_output(contents, filename, existing_stock_data):
+def update_output(contents, filename):
     ctx = callback_context
     triggered_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else 'initial_load'
 
     if triggered_id == 'initial_load':
-        options, ticker_map = load_ticker_names_only()
-        if options:
+        with _DL_LOCK:
+            buf = dict(_DL_BUFFER)
+        if buf.get('close_returns') is not None:
+            cr  = buf['close_returns']
+            op  = buf['original_prices']
+            tm  = buf.get('ticker_map', {})
+            options  = [{'label': col, 'value': col} for col in cr.columns]
+            saved_at = buf.get('saved_at', '')
+            last_upd = f"Aggiornati: {saved_at}" if saved_at else ''
             return (
-                html.Div('✓ Nomi caricati — clicca ▶ Carica Dati per scaricare i prezzi',
+                html.Div(f'✓ {len(options)} asset — da file locale',
                          style={'color': '#007755', 'font-size': '11px'}),
-                options, None, None, [], ticker_map
+                options,
+                cr.to_json(date_format='iso', orient='split'),
+                op.to_json(date_format='iso', orient='split'),
+                [], tm, last_upd, None,
             )
-        return html.Div('Nessun file trovato'), [], None, None, [], {}
+        # Nessun file ancora: mostra solo nomi, download in corso in background
+        options, ticker_map = load_ticker_names_only()
+        return (
+            html.Div('⏳ Download dati in corso…',
+                     style={'color': '#e67e22', 'font-size': '11px'}),
+            options, None, None, [], ticker_map, '', None,
+        )
 
     elif triggered_id == 'upload-data' and contents is not None:
         try:
-            content_type, content_string = contents.split(',')
-            decoded = base64.b64decode(content_string)
-            df = pd.read_excel(io.BytesIO(decoded))
+            _, content_string = contents.split(',')
+            decoded     = base64.b64decode(content_string)
+            df          = pd.read_excel(io.BytesIO(decoded))
             col_names   = df.columns.tolist()
             tickers     = list(df[col_names[0]])
             descrizione = list(df[col_names[1]])
             valuta      = list(df[col_names[2]])
             ticker_map  = {descrizione[i]: tickers[i] for i in range(len(tickers))}
             options     = [{'label': d, 'value': d} for d in descrizione]
+            custom      = {'tickers': tickers, 'descr': descrizione, 'valuta': valuta}
             return (
-                html.Div(f'✓ File caricato: {len(options)} asset — clicca ▶ Carica Dati',
+                html.Div(f'✓ {len(options)} asset caricati — clicca ⟳ Aggiorna per scaricare i prezzi',
                          style={'color': '#007755', 'font-size': '11px'}),
-                options, None, None, [], ticker_map
+                options, None, None, [], ticker_map, '', custom,
             )
         except Exception as e:
-            return html.Div(f'Errore: {e}'), [], None, None, [], {}
+            return html.Div(f'Errore: {e}'), [], None, None, [], {}, '', None
 
     raise PreventUpdate
 
@@ -978,74 +1005,78 @@ def render_tab1(options_tickers):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Callback: avvia download
+# Callback: avvia aggiornamento manuale
 # ─────────────────────────────────────────────────────────────────────────────
 @app.callback(
-    Output('dl-poll-interval',        'disabled',    allow_duplicate=True),
-    Output('dl-poll-interval',        'n_intervals', allow_duplicate=True),
-    Output('load-data-button',        'disabled',    allow_duplicate=True),
-    Output('data-loaded-flag',        'data',        allow_duplicate=True),
+    Output('refresh-poll-interval',   'disabled',    allow_duplicate=True),
+    Output('refresh-poll-interval',   'n_intervals', allow_duplicate=True),
+    Output('refresh-data-btn',        'disabled',    allow_duplicate=True),
     Output('progress-modal-overlay',  'style',       allow_duplicate=True),
     Output('modal-progress-fill',     'style',       allow_duplicate=True),
     Output('modal-pct-text',          'children',    allow_duplicate=True),
     Output('modal-status-text',       'children',    allow_duplicate=True),
     Output('modal-status-text',       'style',       allow_duplicate=True),
-    Input('load-data-button', 'n_clicks'),
+    Input('refresh-data-btn', 'n_clicks'),
     State('dr-start-tab1',    'date'),
+    State('custom-tickers-store', 'data'),
     prevent_initial_call=True,
 )
-def start_download(n_clicks, start_date_picker):
+def start_refresh(n_clicks, start_date_picker, custom_tickers):
     if not n_clicks:
         raise PreventUpdate
-    try:
-        df       = pd.read_excel(_XLSX)
-        cols     = df.columns.tolist()
-        tickers  = list(df[cols[0]])
-        descr    = list(df[cols[1]])
-        valuta   = list(df[cols[2]])
-    except Exception as e:
-        print(f"❌ Errore lettura Excel: {e}")
-        err_fill = {**_FILL_LOADING, 'width': '100%', 'background': '#c0392b'}
-        return (no_update, no_update, False, False,
-                _MODAL_SHOWN, err_fill,
-                'Errore', f'❌ Impossibile leggere il file Excel: {e}', _STATUS_RED)
 
-    # Usa la data di inizio dal picker (default 10 anni fa)
+    with _DL_LOCK:
+        if _DL_STATE.get('status') == 'running':
+            current = _DL_STATE.get('current', 0)
+            total   = _DL_STATE.get('total', 1) or 1
+            pct     = int(current / total * 100)
+            return (False, 0, True, _MODAL_SHOWN,
+                    {**_FILL_LOADING, 'width': f'{pct}%'},
+                    f'Aggiornamento in corso: {current}/{total}…',
+                    'Un aggiornamento è già in corso…', _STATUS_GREY)
+
     start_date = start_date_picker or (
         pd.Timestamp.today() - pd.DateOffset(years=10)
     ).strftime('%Y-%m-%d')
 
-    t = threading.Thread(target=_download_worker,
-                         args=(tickers, descr, valuta, start_date), daemon=True)
-    t.start()
-    print(f"▶ Thread download avviato: {len(tickers)} ticker da {start_date}")
-    return (False, 0, True, False,
-            _MODAL_SHOWN, _FILL_LOADING,
-            f'Avvio download — {len(tickers)} asset da {start_date}…', '', _STATUS_GREY)
+    try:
+        if custom_tickers:
+            tickers = custom_tickers['tickers']
+            descr   = custom_tickers['descr']
+            valuta  = custom_tickers['valuta']
+        else:
+            tickers, descr, valuta = _build_ticker_list()
+    except Exception as e:
+        err_fill = {**_FILL_LOADING, 'width': '100%', 'background': '#c0392b'}
+        return (no_update, no_update, False, _MODAL_SHOWN, err_fill,
+                'Errore', f'❌ {e}', _STATUS_RED)
+
+    threading.Thread(target=_do_download,
+                     args=(tickers, descr, valuta, start_date), daemon=True).start()
+    print(f"▶ Aggiornamento manuale: {len(tickers)} ticker da {start_date}")
+    return (False, 0, True, _MODAL_SHOWN, _FILL_LOADING,
+            f'Avvio — {len(tickers)} asset da {start_date}…', '', _STATUS_GREY)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Callback: polling progress
+# Callback: polling aggiornamento
 # ─────────────────────────────────────────────────────────────────────────────
 @app.callback(
-    Output('dl-progress-text',           'children'),
-    Output('dl-progress-fill',           'style'),
-    Output('dl-progress-bar-container',  'style'),
-    Output('stock-data',                 'data',     allow_duplicate=True),
-    Output('original-prices-data',       'data',     allow_duplicate=True),
-    Output('asset-checklist',            'data',     allow_duplicate=True),
-    Output('ticker-map-store',           'data',     allow_duplicate=True),
-    Output('data-loaded-flag',           'data',     allow_duplicate=True),
-    Output('dl-poll-interval',           'disabled', allow_duplicate=True),
-    Output('load-data-button',           'disabled', allow_duplicate=True),
-    Output('modal-progress-fill',        'style',    allow_duplicate=True),
-    Output('modal-pct-text',             'children', allow_duplicate=True),
-    Output('modal-status-text',          'children', allow_duplicate=True),
-    Output('modal-status-text',          'style',    allow_duplicate=True),
-    Input('dl-poll-interval', 'n_intervals'),
+    Output('stock-data',              'data',     allow_duplicate=True),
+    Output('original-prices-data',    'data',     allow_duplicate=True),
+    Output('asset-checklist',         'data',     allow_duplicate=True),
+    Output('ticker-map-store',        'data',     allow_duplicate=True),
+    Output('data-last-updated',       'children', allow_duplicate=True),
+    Output('refresh-poll-interval',   'disabled', allow_duplicate=True),
+    Output('refresh-data-btn',        'disabled', allow_duplicate=True),
+    Output('modal-progress-fill',     'style',    allow_duplicate=True),
+    Output('modal-pct-text',          'children', allow_duplicate=True),
+    Output('modal-status-text',       'children', allow_duplicate=True),
+    Output('modal-status-text',       'style',    allow_duplicate=True),
+    Input('refresh-poll-interval', 'n_intervals'),
     prevent_initial_call=True,
 )
-def poll_download_progress(n):
+def poll_refresh_progress(n):
     with _DL_LOCK:
         state  = dict(_DL_STATE)
         buffer = dict(_DL_BUFFER)
@@ -1054,63 +1085,51 @@ def poll_download_progress(n):
     current = state.get('current', 0)
     total   = state.get('total', 1) or 1
     pct     = int(current / total * 100)
-
-    bar_style = {'height': '6px', 'background': '#007755', 'border-radius': '3px',
-                 'width': f'{pct}%', 'transition': 'width 0.4s ease'}
-    container_show = {'width': '180px', 'background': '#ddd',
-                      'border-radius': '3px', 'display': 'block'}
     modal_fill = {**_FILL_LOADING, 'width': f'{pct}%'}
 
     if status == 'idle':
         raise PreventUpdate
 
     if status == 'running':
-        return (f'Caricamento {current}/{total} ({pct}%)', bar_style, container_show,
-                no_update, no_update, no_update, no_update, no_update,
+        return (no_update, no_update, no_update, no_update, no_update,
                 False, True,
-                modal_fill, f'{current} / {total}  ({pct}%)', 'Download in corso…', _STATUS_GREY)
+                modal_fill, f'{current} / {total}  ({pct}%)',
+                'Download in corso…', _STATUS_GREY)
 
     if status == 'error':
         err_fill = {**_FILL_LOADING, 'width': '100%', 'background': '#c0392b'}
-        return ('❌ Errore download', bar_style, container_show,
-                no_update, no_update, no_update, no_update, False, True, False,
+        return (no_update, no_update, no_update, no_update, no_update,
+                True, False,
                 err_fill, '❌ Download fallito',
-                'Si è verificato un errore durante il download dei dati.', _STATUS_RED)
+                'Si è verificato un errore.', _STATUS_RED)
 
     close_returns   = buffer.get('close_returns')
     original_prices = buffer.get('original_prices')
     if close_returns is None or close_returns.empty:
         err_fill = {**_FILL_LOADING, 'width': '100%', 'background': '#c0392b'}
-        return ('❌ Nessun dato', bar_style, container_show,
-                no_update, no_update, no_update, no_update, False, True, False,
+        return (no_update, no_update, no_update, no_update, no_update,
+                True, False,
                 err_fill, '❌ Nessun dato ricevuto',
-                'Il download è terminato ma non sono stati restituiti dati.', _STATUS_RED)
+                'Il download è terminato senza dati.', _STATUS_RED)
 
-    options = [{'label': col, 'value': col} for col in close_returns.columns]
-    try:
-        df        = pd.read_excel(_XLSX)
-        col_names = df.columns.tolist()
-        ticker_map = {list(df[col_names[1]])[i]: list(df[col_names[0]])[i]
-                      for i in range(len(df))}
-    except Exception:
-        ticker_map = {}
-
+    options      = [{'label': col, 'value': col} for col in close_returns.columns]
+    ticker_map   = buffer.get('ticker_map', {})
+    saved_at     = buffer.get('saved_at', '')
     returns_json = close_returns.to_json(date_format='iso', orient='split')
     prices_json  = original_prices.to_json(date_format='iso', orient='split')
     ok_fill      = {**_FILL_LOADING, 'width': '100%'}
 
     return (
-        f'✓ {len(options)} asset caricati',
-        {**bar_style, 'width': '100%'},
-        container_show,
-        returns_json, prices_json, options, ticker_map, True, True, False,
-        ok_fill, f'✓ {len(options)} asset caricati',
-        'Dati pronti — puoi chiudere questa finestra e selezionare gli asset.', _STATUS_GREEN,
+        returns_json, prices_json, options, ticker_map,
+        f"Aggiornati: {saved_at}",
+        True, False,
+        ok_fill, f'✓ {len(options)} asset',
+        'Dati pronti — puoi chiudere questa finestra.', _STATUS_GREEN,
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Callback: chiudi modale progresso
+# Callback: chiudi modale aggiornamento
 # ─────────────────────────────────────────────────────────────────────────────
 @app.callback(
     Output('progress-modal-overlay', 'style', allow_duplicate=True),
@@ -1170,10 +1189,10 @@ def update_benchmark_options(options_tickers, current_value):
 # ─────────────────────────────────────────────────────────────────────────────
 @app.callback(
     Output('update-hint', 'style'),
-    Input('data-loaded-flag',        'data'),
+    Input('stock-data',              'data'),
     Input('update-portfolio-button', 'n_clicks'),
 )
-def toggle_update_hint(data_loaded, update_clicks):
+def toggle_update_hint(stock_data, update_clicks):
     _shown  = {'display': 'block', 'font-size': '9px', 'color': '#c0392b',
                 'font-weight': '600', 'padding': '2px 5px 4px 5px',
                 'background': '#fdf2f0', 'border-left': '3px solid #c0392b',
@@ -1183,7 +1202,7 @@ def toggle_update_hint(data_loaded, update_clicks):
     triggered = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else ''
     if triggered == 'update-portfolio-button' and update_clicks:
         return _hidden
-    if triggered == 'data-loaded-flag' and data_loaded:
+    if triggered == 'stock-data' and stock_data:
         return _shown
     return _hidden
 
@@ -1195,7 +1214,6 @@ def toggle_update_hint(data_loaded, update_clicks):
     Output('weights-grid-container', 'children'),
     Output('asset-count-display',    'children'),
     Input('update-portfolio-button', 'n_clicks'),
-    State('data-loaded-flag',        'data'),
     State('stock-data',    'data'),
     State('asset-checklist', 'data'),
     State({'type': 'graph-select-checkbox',  'index': ALL}, 'value'),
@@ -1214,7 +1232,7 @@ def toggle_update_hint(data_loaded, update_clicks):
     State('ir-filter-radio',    'value'),
     prevent_initial_call=True,
 )
-def generate_asset_and_weight_inputs(update_clicks, data_loaded_flag, stock_data_json, options_tickers,
+def generate_asset_and_weight_inputs(update_clicks, stock_data_json, options_tickers,
                                       graph_vals, ir_vals, sharpe_vals, tev_vals,
                                       dd_vals, vol_vals, var90_vals, var95_vals,
                                       saved_p1, saved_p2, saved_p3,
@@ -1251,13 +1269,13 @@ def generate_asset_and_weight_inputs(update_clicks, data_loaded_flag, stock_data
             for asset in asset_names:
                 if asset == benchmark_value or asset not in df_all.columns:
                     continue
-                combined = pd.concat([df_all[asset].dropna(), benchmark_returns], axis=1).dropna()
-                if len(combined) >= window:
-                    ir_series = calculate_rolling_information_ratio(
-                        combined.iloc[:, 0], combined.iloc[:, 1], window=window)
-                    last_ir = ir_series.dropna()
-                    if not last_ir.empty and last_ir.iloc[-1] > threshold:
-                        assets_above_threshold.add(asset)
+                tail = pd.concat([df_all[asset].dropna(), benchmark_returns], axis=1).dropna().iloc[-window:]
+                if len(tail) < window:
+                    continue
+                ir_val = calculate_rolling_information_ratio(
+                    tail.iloc[:, 0], tail.iloc[:, 1], window=window).iloc[-1]
+                if pd.notna(ir_val) and ir_val > threshold:
+                    assets_above_threshold.add(asset)
 
     n_total = len(asset_names)
     n_above = len(assets_above_threshold)
@@ -2087,6 +2105,63 @@ def load_session_cb(session_id):
     store_data = load_session(session_id)
     return tuple(store_data.get(sid, no_update) for sid in CLIENT_SESSION_STORES)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Startup: carica market_data.pkl se esiste, altrimenti scarica in background
+# ─────────────────────────────────────────────────────────────────────────────
+def _startup_load():
+    global _DL_STATE, _DL_BUFFER
+    if _MARKET_DATA_FILE.exists():
+        try:
+            with open(_MARKET_DATA_FILE, 'rb') as f:
+                data = pickle.load(f)
+            with _DL_LOCK:
+                _DL_BUFFER.update(data)
+                _DL_STATE['status']  = 'done'
+                _DL_STATE['current'] = 1
+                _DL_STATE['total']   = 1
+            print(f"✓ Dati caricati da disco — {data.get('saved_at', '?')}")
+            return
+        except Exception as e:
+            print(f"⚠ Lettura market_data.pkl fallita: {e}")
+
+    # Nessun file: download immediato in background
+    def _bg():
+        try:
+            start = (pd.Timestamp.today() - pd.DateOffset(years=10)).strftime('%Y-%m-%d')
+            tickers, descr, valuta = _build_ticker_list()
+            _do_download(tickers, descr, valuta, start)
+        except Exception as e:
+            print(f"⚠ Download iniziale fallito: {e}")
+
+    print("▶ market_data.pkl non trovato — download in background…")
+    threading.Thread(target=_bg, daemon=True).start()
+
+_startup_load()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scheduler: aggiornamento automatico ogni giorno alle 18:30 (lun-ven)
+# ─────────────────────────────────────────────────────────────────────────────
+def _scheduled_update():
+    try:
+        start = (pd.Timestamp.today() - pd.DateOffset(years=10)).strftime('%Y-%m-%d')
+        tickers, descr, valuta = _build_ticker_list()
+        print(f"⏰ Aggiornamento schedulato: {len(tickers)} ticker")
+        _do_download(tickers, descr, valuta, start)
+    except Exception as e:
+        print(f"⚠ Aggiornamento schedulato fallito: {e}")
+
+try:
+    from apscheduler.schedulers.background import BackgroundScheduler
+    _scheduler = BackgroundScheduler(timezone='Europe/Rome')
+    _scheduler.add_job(_scheduled_update, 'cron', hour=18, minute=30,
+                       day_of_week='mon-fri', misfire_grace_time=3600)
+    _scheduler.start()
+    print("✓ Scheduler avviato — aggiornamento automatico ogni giorno alle 18:30")
+except ImportError:
+    print("⚠ apscheduler non installato — aggiornamento automatico disabilitato")
+    print("  pip install apscheduler")
 
 # ─────────────────────────────────────────────────────────────────────────────
 server = app.server   # esposto per gunicorn
