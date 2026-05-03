@@ -558,6 +558,13 @@ def get_portfolio_analysis_tab(options_tickers):
                                   placeholder='30', style={'width': '55px', 'font-size': '11px'}),
                     ], style={'display': 'flex', 'align-items': 'center', 'margin-right': '12px'}),
                     html.Div([
+                        html.Label('AKRatio MA:',
+                                   style={'margin-right': '5px', 'white-space': 'nowrap',
+                                          'font-size': '11px'}),
+                        dcc.Input(id='ak-ma-input', type='number', value=1, min=1,
+                                  placeholder='1', style={'width': '55px', 'font-size': '11px'}),
+                    ], style={'display': 'flex', 'align-items': 'center', 'margin-right': '12px'}),
+                    html.Div([
                         html.Label('Vol W:',
                                    style={'margin-right': '5px', 'white-space': 'nowrap',
                                           'font-size': '11px'}),
@@ -1707,6 +1714,7 @@ def sync_date_range(stock_data, start_date, end_date):
     State('global-assets-selected',  'data'),
     State('benchmark-selector',      'value'),
     State('ir-window-input',         'value'),
+    State('ak-ma-input',             'value'),
     State('weights-store-P1',        'data'),
     State('weights-store-P2',        'data'),
     State('weights-store-P3',        'data'),
@@ -1724,7 +1732,7 @@ def sync_date_range(stock_data, start_date, end_date):
     prevent_initial_call=True,
 )
 def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_assets,
-                 benchmark_value, ir_window,
+                 benchmark_value, ir_window, ak_ma_window,
                  weights_p1_data, weights_p2_data, weights_p3_data,
                  all_ir_checkbox_values, all_sharpe_checkbox_values, all_tev_checkbox_values,
                  all_dd_checkbox_values, all_vol_checkbox_values,
@@ -1909,6 +1917,7 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
                 pass
 
     # Subplot 2: AKRatio
+    _ak_ma = int(ak_ma_window) if ak_ma_window and int(ak_ma_window) > 1 else 1
     color_index = 0
     for col_ir in selected_irs:
         if col_ir in df_plot.columns:
@@ -1919,7 +1928,8 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
             else:
                 tc = _color_map.get(orig, color_palette[color_index % len(color_palette)])
                 line_dict = dict(color=tc, width=4 if orig.startswith('Port') else 2.5)
-            fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot[col_ir],
+            y_vals = df_plot[col_ir].rolling(_ak_ma, min_periods=1).mean() if _ak_ma > 1 else df_plot[col_ir]
+            fig.add_trace(go.Scatter(x=df_plot.index, y=y_vals,
                                       name=col_ir.replace('_InformationRatio', '_AKRatio'),
                                       line=line_dict, legend='legend2'), row=2, col=1)
             color_index += 1
