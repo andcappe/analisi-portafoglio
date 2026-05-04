@@ -80,7 +80,7 @@ app.index_string = '''
 # Percorsi file
 _XLSX        = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'TARBIUTH.xlsx')
 _PROFILO_HTML = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                              '..', 'profilo', 'index.html'))
+                                              'profilo.html'))
 
 # Rotta Flask per servire la pagina profilo
 @app.server.route('/health')
