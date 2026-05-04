@@ -769,6 +769,7 @@ def _navbar():
 
         # Link di navigazione
         html.Ul([
+            html.Li(html.A('Home',         href='https://andreacappelletti.app',            target='_blank', style=link_style)),
             html.Li(html.A('Chi Sono',     href='https://andreacappelletti.app#chi-sono',   target='_blank', style=link_style)),
             html.Li(html.A('Esperienza',   href='https://andreacappelletti.app#esperienza', target='_blank', style=link_style)),
             html.Li(html.A('Strumenti',    href='https://andreacappelletti.app#dashboard',  target='_blank', style=link_style)),
