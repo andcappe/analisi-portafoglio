@@ -34,7 +34,9 @@ _EXTERNAL_STYLESHEETS = [
 ]
 
 app = Dash(__name__, suppress_callback_exceptions=True,
-           external_stylesheets=_EXTERNAL_STYLESHEETS)
+           external_stylesheets=_EXTERNAL_STYLESHEETS,
+           requests_pathname_prefix='/portafoglio/',
+           routes_pathname_prefix='/portafoglio/')
 app.server.config['MAX_CONTENT_LENGTH'] = 256 * 1024 * 1024
 
 app.index_string = '''
@@ -85,6 +87,7 @@ _PROFILO_HTML = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__f
 def health_check():
     return 'OK', 200
 
+@app.server.route('/')
 @app.server.route('/sito')
 def serve_profilo():
     return flask_send_file(_PROFILO_HTML)
