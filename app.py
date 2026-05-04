@@ -68,6 +68,10 @@ app.index_string = '''
     margin-left: 6px;
   }
   [data-tooltip]:hover::after { opacity: 1; }
+  @keyframes spin {
+    0%   { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
 </style>
 </head>
 <body>
@@ -697,10 +701,33 @@ def get_portfolio_analysis_tab(options_tickers):
                 # Colonna destra: grafico
                 html.Div([
                     html.Div(
-                        dcc.Graph(id='controls-and-graph',
-                                  style={'width': '100%', 'height': '1900px',
-                                         'margin': '0', 'padding': '0'},
-                                  config={'responsive': True}),
+                        dcc.Loading(
+                            id='graph-loading',
+                            type='circle',
+                            color='#1a3a6b',
+                            overlay_style={'visibility': 'visible',
+                                           'background': 'rgba(255,255,255,0.75)'},
+                            custom_spinner=html.Div([
+                                html.Div(style={
+                                    'width': '40px', 'height': '40px',
+                                    'border': '4px solid #d0ddf0',
+                                    'borderTop': '4px solid #1a3a6b',
+                                    'borderRadius': '50%',
+                                    'animation': 'spin 0.8s linear infinite',
+                                }),
+                                html.Div('Calcolo in corso…', style={
+                                    'marginTop': '12px', 'color': '#1a3a6b',
+                                    'fontWeight': '600', 'fontSize': '13px',
+                                    'fontFamily': 'Inter, sans-serif',
+                                }),
+                            ], style={'display': 'flex', 'flexDirection': 'column',
+                                      'alignItems': 'center', 'justifyContent': 'center',
+                                      'padding': '40px'}),
+                            children=dcc.Graph(id='controls-and-graph',
+                                               style={'width': '100%', 'height': '1900px',
+                                                      'margin': '0', 'padding': '0'},
+                                               config={'responsive': True}),
+                        ),
                         style={'overflow-y': 'auto', 'max-height': '82vh',
                                'width': '100%', 'margin-bottom': '-10px'},
                     ),
