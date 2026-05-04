@@ -1165,22 +1165,37 @@ def close_progress_modal(n):
     Output('download-data',   'data'),
     Output('download-status', 'children'),
     Input('save-data-button', 'n_clicks'),
-    State('stock-data',       'data'),
+    State('original-prices-data', 'data'),
 )
-def salva_dati(n_clicks, stock_data):
-    if n_clicks and n_clicks > 0 and stock_data:
-        close_returns = _get_df(stock_data)
-        try:
-            buf = io.BytesIO()
-            close_returns.to_excel(buf)
-            buf.seek(0)
-            return (
-                dcc.send_bytes(buf.read(), 'rendimenti.xlsx'),
-                html.Div('✓ File scaricato', style={'color': 'green', 'font-size': '11px'}),
-            )
-        except Exception as e:
-            return no_update, html.Div(f'Errore: {e}', style={'color': 'red'})
-    raise PreventUpdate
+def salva_dati(n_clicks, original_prices_data):
+    if not n_clicks or n_clicks == 0:
+        raise PreventUpdate
+
+    # Legge prezzi dallo store o direttamente dal buffer
+    df_prices = None
+    if original_prices_data:
+        df_prices = _get_df(original_prices_data)
+    if df_prices is None or df_prices.empty:
+        with _DL_LOCK:
+            buf_data = dict(_DL_BUFFER)
+        df_prices = buf_data.get('original_prices')
+
+    if df_prices is None or df_prices.empty:
+        return no_update, html.Div('⚠ Nessun dato disponibile — clicca prima ⟳ Aggiorna',
+                                   style={'color': '#e67e22', 'font-size': '11px'})
+    try:
+        df_prices.index = pd.to_datetime(df_prices.index).strftime('%Y-%m-%d')
+        df_prices.index.name = 'Data'
+        out = io.BytesIO()
+        with pd.ExcelWriter(out, engine='openpyxl') as writer:
+            df_prices.to_excel(writer, sheet_name='Prezzi')
+        out.seek(0)
+        return (
+            dcc.send_bytes(out.read(), 'prezzi_asset.xlsx'),
+            html.Div('✓ File scaricato', style={'color': 'green', 'font-size': '11px'}),
+        )
+    except Exception as e:
+        return no_update, html.Div(f'Errore: {e}', style={'color': 'red'})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
