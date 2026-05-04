@@ -81,6 +81,10 @@ _PROFILO_HTML = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__f
                                               '..', 'profilo', 'index.html'))
 
 # Rotta Flask per servire la pagina profilo
+@app.server.route('/health')
+def health_check():
+    return 'OK', 200
+
 @app.server.route('/sito')
 def serve_profilo():
     return flask_send_file(_PROFILO_HTML)
@@ -138,12 +142,14 @@ def calculate_drawdown(returns_series):
     rolling_max  = cumulative.cummax()
     return (cumulative - rolling_max) / rolling_max
 
-def calculate_rolling_cvar(returns_series, window, tail_pct=0.05):
-    min_p = max(10, window // 2)
+def calculate_historical_cvar(returns_series, window, tail_pct=0.05):
+    # Rendimenti composti rolling a N giorni
+    n_day_ret = (1 + returns_series).rolling(window, min_periods=window).apply(np.prod, raw=True) - 1
+    # CVaR calcolato sulla distribuzione espansa di tutti i rendimenti N-giorni visti fino a t
     def _cvar(w):
         n_tail = max(1, int(len(w) * tail_pct))
         return np.partition(w, n_tail)[:n_tail].mean()
-    return returns_series.rolling(window, min_periods=min_p).apply(_cvar, raw=True)
+    return n_day_ret.expanding(min_periods=window + 1).apply(_cvar, raw=True)
 
 def _rolling_volatility(returns_series, window):
     return returns_series.rolling(window, min_periods=window // 2).std() * np.sqrt(252)
@@ -2014,7 +2020,7 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
         if v90:
             an = v90.replace('_VaR90', '')
             if an in df_with_portfolios.columns:
-                vs    = _thin(calculate_rolling_cvar(df_with_portfolios[an], vol_window, 0.10))
+                vs    = _thin(calculate_historical_cvar(df_with_portfolios[an], vol_window, 0.10))
                 tn    = f'{an} VaR90'
                 is_sel = (selected_column == tn)
                 if is_sel:
@@ -2030,7 +2036,7 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
         if v95:
             an = v95.replace('_VaR95', '')
             if an in df_with_portfolios.columns:
-                vs    = _thin(calculate_rolling_cvar(df_with_portfolios[an], vol_window, 0.05))
+                vs    = _thin(calculate_historical_cvar(df_with_portfolios[an], vol_window, 0.05))
                 tn    = f'{an} VaR95'
                 is_sel = (selected_column == tn)
                 if is_sel:
