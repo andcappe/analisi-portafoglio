@@ -1210,9 +1210,15 @@ def salva_dati(n_clicks, original_prices_data):
 def update_benchmark_options(options_tickers, current_value):
     if not options_tickers:
         return [], None
-    if current_value and any(opt['value'] == current_value for opt in options_tickers):
-        return options_tickers, current_value
-    return options_tickers, options_tickers[0]['value'] if options_tickers else None
+    portfolio_opts = [
+        {'label': '── Portafoglio P1', 'value': 'Port1'},
+        {'label': '── Portafoglio P2', 'value': 'Port2'},
+        {'label': '── Portafoglio P3', 'value': 'Port3'},
+    ]
+    all_options = portfolio_opts + options_tickers
+    if current_value and any(opt['value'] == current_value for opt in all_options):
+        return all_options, current_value
+    return all_options, options_tickers[0]['value'] if options_tickers else None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
