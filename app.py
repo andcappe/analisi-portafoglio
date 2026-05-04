@@ -764,16 +764,16 @@ def _navbar():
                 'border': '1px solid rgba(243,112,33,0.3)',
                 'padding': '3px 8px', 'borderRadius': '4px',
             }),
-        ], href='https://andcappe.github.io', target='_blank',
+        ], href='https://andreacappelletti.app', target='_blank',
            style={'textDecoration': 'none', 'display': 'flex', 'alignItems': 'center'}),
 
         # Link di navigazione
         html.Ul([
-            html.Li(html.A('Chi Sono',     href='https://andcappe.github.io#chi-sono',   target='_blank', style=link_style)),
-            html.Li(html.A('Esperienza',   href='https://andcappe.github.io#esperienza', target='_blank', style=link_style)),
-            html.Li(html.A('Strumenti',    href='https://andcappe.github.io#dashboard',  target='_blank', style=link_style)),
-            html.Li(html.A('Prenota Call', href='https://andcappe.github.io#prenota',    target='_blank', style=link_style)),
-            html.Li(html.A('Contatti',     href='https://andcappe.github.io#contatti',   target='_blank', style=link_style)),
+            html.Li(html.A('Chi Sono',     href='https://andreacappelletti.app#chi-sono',   target='_blank', style=link_style)),
+            html.Li(html.A('Esperienza',   href='https://andreacappelletti.app#esperienza', target='_blank', style=link_style)),
+            html.Li(html.A('Strumenti',    href='https://andreacappelletti.app#dashboard',  target='_blank', style=link_style)),
+            html.Li(html.A('Prenota Call', href='https://andreacappelletti.app#prenota',    target='_blank', style=link_style)),
+            html.Li(html.A('Contatti',     href='https://andreacappelletti.app#contatti',   target='_blank', style=link_style)),
         ], style={'display': 'flex', 'gap': '2rem', 'listStyle': 'none',
                   'margin': '0', 'padding': '0', 'alignItems': 'center'}),
 
@@ -781,7 +781,7 @@ def _navbar():
         html.A([
             html.I(className='fa-regular fa-calendar', style={'marginRight': '7px'}),
             'Prenota call',
-        ], href='https://andcappe.github.io#prenota', target='_blank', style={
+        ], href='https://andreacappelletti.app#prenota', target='_blank', style={
             'padding': '9px 20px',
             'background': '#1a3a6b', 'color': 'white',
             'borderRadius': '7px', 'fontSize': '0.8rem', 'fontWeight': '700',
