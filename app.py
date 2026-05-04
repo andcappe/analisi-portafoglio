@@ -1246,7 +1246,7 @@ def toggle_update_hint(stock_data, update_clicks):
     State('benchmark-selector', 'value'),
     State('ir-window-input',    'value'),
     State('ir-filter-radio',    'value'),
-    prevent_initial_call=True,
+    prevent_initial_call=False,
 )
 def generate_asset_and_weight_inputs(update_clicks, stock_data_json, options_tickers,
                                       graph_vals, ir_vals, sharpe_vals, tev_vals,
@@ -1257,8 +1257,15 @@ def generate_asset_and_weight_inputs(update_clicks, stock_data_json, options_tic
         'Carica i dati per visualizzare gli asset',
         style={'color': '#888', 'font-style': 'italic', 'font-size': '11px', 'padding': '12px 8px'}
     )
-    if not update_clicks:
-        return [_placeholder], ''
+    # Se stock-data non è nello store, prova direttamente dal buffer in memoria
+    if not stock_data_json:
+        with _DL_LOCK:
+            buf = dict(_DL_BUFFER)
+        cr = buf.get('close_returns')
+        if cr is not None and not cr.empty:
+            stock_data_json = cr.to_json(date_format='iso', orient='split')
+            if not options_tickers:
+                options_tickers = [{'label': c, 'value': c} for c in cr.columns]
     if not stock_data_json or not options_tickers:
         return [_placeholder], ''
 
@@ -1758,7 +1765,13 @@ def update_graph(update_clicks, delete_clicks, clickData, date_range, selected_a
         raise PreventUpdate
 
     if not stock_data:
-        return {}, 'Nessun dato caricato', ''
+        with _DL_LOCK:
+            buf = dict(_DL_BUFFER)
+        cr = buf.get('close_returns')
+        if cr is not None and not cr.empty:
+            stock_data = cr.to_json(date_format='iso', orient='split')
+        else:
+            return {}, 'Nessun dato caricato — clicca ⟳ Aggiorna', ''
 
     def _collect(vals):
         result = []
