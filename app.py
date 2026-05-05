@@ -209,7 +209,9 @@ _DL_LOCK   = threading.Lock()
 
 
 def _build_ticker_list():
-    df   = pd.read_excel(_XLSX)
+    # Usa il file custom se presente, altrimenti TARBIUTH
+    xlsx = _ACTIVE_TICKERS_FILE if _ACTIVE_TICKERS_FILE.exists() else Path(_XLSX)
+    df   = pd.read_excel(xlsx)
     cols = df.columns.tolist()
     return list(df[cols[0]]), list(df[cols[1]]), list(df[cols[2]])
 
@@ -327,15 +329,17 @@ def _do_download(tickers, descrizione, valuta, start_date):
 # ─────────────────────────────────────────────────────────────────────────────
 def load_ticker_names_only():
     try:
-        df          = pd.read_excel(_XLSX)
-        col_names   = df.columns.tolist()
-        if len(col_names) < 3:
+        xlsx      = _ACTIVE_TICKERS_FILE if _ACTIVE_TICKERS_FILE.exists() else Path(_XLSX)
+        df        = pd.read_excel(xlsx)
+        col_names = df.columns.tolist()
+        if len(col_names) < 2:
             return [], {}
         tickers     = list(df[col_names[0]])
         descrizione = list(df[col_names[1]])
         ticker_map  = {descrizione[i]: tickers[i] for i in range(len(tickers))}
         options     = [{'label': d, 'value': d} for d in descrizione]
-        print(f"✓ Nomi caricati: {len(options)} asset")
+        src = 'custom' if _ACTIVE_TICKERS_FILE.exists() else 'TARBIUTH'
+        print(f"✓ Nomi caricati: {len(options)} asset [{src}]")
         return options, ticker_map
     except Exception as e:
         print(f"Errore lettura nomi: {e}")
@@ -347,8 +351,9 @@ def load_ticker_names_only():
 # ─────────────────────────────────────────────────────────────────────────────
 SESSIONS_DIR = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sessions'))
 SESSIONS_DIR.mkdir(exist_ok=True)
-_INDEX_FILE       = SESSIONS_DIR / 'index.json'
-_MARKET_DATA_FILE = SESSIONS_DIR / 'market_data.pkl'
+_INDEX_FILE          = SESSIONS_DIR / 'index.json'
+_MARKET_DATA_FILE    = SESSIONS_DIR / 'market_data.pkl'
+_ACTIVE_TICKERS_FILE = SESSIONS_DIR / 'active_tickers.xlsx'
 
 CLIENT_SESSION_STORES = [
     "weights-store-P1",
@@ -1080,7 +1085,18 @@ def update_output(contents, filename):
 
             else:
                 # File lista ticker: col[0]=ticker, col[1]=descrizione, col[2]=valuta
-                # Avvia il download da Yahoo automaticamente senza dover cliccare ⟳ Aggiorna
+                # Salva il file su disco per persistenza (active_tickers.xlsx + copia timestampata)
+                try:
+                    with open(_ACTIVE_TICKERS_FILE, 'wb') as fout:
+                        fout.write(decoded)
+                    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    copy_path = SESSIONS_DIR / f'tickers_{ts}.xlsx'
+                    with open(copy_path, 'wb') as fout:
+                        fout.write(decoded)
+                    print(f"✓ File ticker salvato: {copy_path.name}")
+                except Exception as e:
+                    print(f"⚠ Salvataggio file ticker fallito: {e}")
+
                 tickers     = list(df[col_names[0]])
                 descrizione = (list(df[col_names[1]]) if len(col_names) > 1
                                else [str(t) for t in tickers])
@@ -1241,12 +1257,19 @@ def poll_refresh_progress(n):
     prices_json  = original_prices.to_json(date_format='iso', orient='split')
     ok_fill      = {**_FILL_LOADING, 'width': '100%'}
 
+    errors    = state.get('errors', [])
+    n_ok      = len(options)
+    n_err     = len(errors)
+    err_note  = f' — ⚠ {n_err} non trovati su Yahoo' if n_err else ''
+    status_msg = (f'Dati pronti — {n_ok} asset scaricati{err_note}.\n'
+                  + ('\n'.join(errors[:5]) if errors else ''))
+
     return (
         returns_json, prices_json, options, ticker_map,
         f"Aggiornati: {saved_at}",
         True, False,
-        ok_fill, f'✓ {len(options)} asset',
-        'Dati pronti — puoi chiudere questa finestra.', _STATUS_GREEN,
+        ok_fill, f'✓ {n_ok} asset{err_note}',
+        status_msg, _STATUS_GREEN if not n_err else {**_STATUS_GREEN, 'color': '#b8860b'},
     )
 
 
