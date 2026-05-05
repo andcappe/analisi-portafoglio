@@ -988,12 +988,24 @@ app.layout = html.Div([
     Output('ticker-map-store',        'data'),
     Output('data-last-updated',       'children'),
     Output('custom-tickers-store',    'data'),
+    Output('refresh-poll-interval',   'disabled',    allow_duplicate=True),
+    Output('refresh-poll-interval',   'n_intervals', allow_duplicate=True),
+    Output('refresh-data-btn',        'disabled',    allow_duplicate=True),
+    Output('progress-modal-overlay',  'style',       allow_duplicate=True),
+    Output('modal-progress-fill',     'style',       allow_duplicate=True),
+    Output('modal-pct-text',          'children',    allow_duplicate=True),
+    Output('modal-status-text',       'children',    allow_duplicate=True),
+    Output('modal-status-text',       'style',       allow_duplicate=True),
     Input('upload-data', 'contents'),
     State('upload-data', 'filename'),
+    prevent_initial_call='initial_duplicate',
 )
 def update_output(contents, filename):
     ctx = callback_context
     triggered_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else 'initial_load'
+
+    # valori no_update per gli output modal/poll (usati nei rami che non avviano download)
+    _noup = (no_update,) * 8
 
     if triggered_id == 'initial_load':
         with _DL_LOCK:
@@ -1012,6 +1024,7 @@ def update_output(contents, filename):
                 cr.to_json(date_format='iso', orient='split'),
                 op.to_json(date_format='iso', orient='split'),
                 [], tm, last_upd, None,
+                *_noup,
             )
         # Nessun file ancora: mostra solo nomi, download in corso in background
         options, ticker_map = load_ticker_names_only()
@@ -1019,6 +1032,7 @@ def update_output(contents, filename):
             html.Div('⏳ Download dati in corso…',
                      style={'color': '#e67e22', 'font-size': '11px'}),
             options, None, None, [], ticker_map, '', None,
+            *_noup,
         )
 
     elif triggered_id == 'upload-data' and contents is not None:
@@ -1055,15 +1069,18 @@ def update_output(contents, filename):
                         'ticker_map': ticker_map,
                     })
                 return (
-                    html.Div(f'✓ {len(options)} asset — prezzi caricati dal file (nessun download necessario)',
+                    html.Div(f'✓ {len(options)} asset — prezzi caricati dal file',
                              style={'color': '#007755', 'font-size': '11px'}),
                     options,
                     close_returns.to_json(date_format='iso', orient='split'),
                     df_prices.to_json(date_format='iso', orient='split'),
                     [], ticker_map, f"Caricati: {saved_at}", None,
+                    *_noup,
                 )
+
             else:
                 # File lista ticker: col[0]=ticker, col[1]=descrizione, col[2]=valuta
+                # Avvia il download da Yahoo automaticamente senza dover cliccare ⟳ Aggiorna
                 tickers     = list(df[col_names[0]])
                 descrizione = (list(df[col_names[1]]) if len(col_names) > 1
                                else [str(t) for t in tickers])
@@ -1072,13 +1089,28 @@ def update_output(contents, filename):
                 ticker_map  = {descrizione[i]: tickers[i] for i in range(len(tickers))}
                 options     = [{'label': d, 'value': d} for d in descrizione]
                 custom      = {'tickers': tickers, 'descr': descrizione, 'valuta': valuta}
+
+                start_date = (pd.Timestamp.today() - pd.DateOffset(years=10)).strftime('%Y-%m-%d')
+                print(f"▶ Upload file ticker: {len(tickers)} asset da scaricare da {start_date}")
+                threading.Thread(
+                    target=_do_download,
+                    args=(tickers, descrizione, valuta, start_date),
+                    daemon=True,
+                ).start()
+
                 return (
-                    html.Div(f'✓ {len(options)} asset caricati — clicca ⟳ Aggiorna per scaricare i prezzi',
-                             style={'color': '#007755', 'font-size': '11px'}),
+                    html.Div(f'⏳ Download avviato — {len(options)} asset da Yahoo Finance…',
+                             style={'color': '#e67e22', 'font-size': '11px'}),
                     options, None, None, [], ticker_map, '', custom,
+                    False, 0, True, _MODAL_SHOWN, _FILL_LOADING,
+                    f'Avvio — {len(tickers)} asset…', '', _STATUS_GREY,
                 )
+
         except Exception as e:
-            return html.Div(f'Errore: {e}'), [], None, None, [], {}, '', None
+            return (
+                html.Div(f'Errore: {e}'), [], None, None, [], {}, '', None,
+                *_noup,
+            )
 
     raise PreventUpdate
 
