@@ -252,7 +252,7 @@ def _thin(s, max_pts=500):
 _DF_CACHE: dict = {}
 
 def _df_key(json_str):
-    return json_str[:120]
+    return json_str[:4000]
 
 def _get_df(json_str):
     if not json_str:
@@ -1361,14 +1361,15 @@ def salva_dati(n_clicks, original_prices_data):
     if not n_clicks or n_clicks == 0:
         raise PreventUpdate
 
-    # Legge prezzi dallo store o direttamente dal buffer
-    df_prices = None
-    if original_prices_data:
-        df_prices = _get_df(original_prices_data)
+    # Legge prezzi direttamente dal buffer (bypassa la cache per evitare collisioni con i rendimenti)
+    with _DL_LOCK:
+        buf_data = dict(_DL_BUFFER)
+    df_prices = buf_data.get('original_prices')
     if df_prices is None or df_prices.empty:
-        with _DL_LOCK:
-            buf_data = dict(_DL_BUFFER)
-        df_prices = buf_data.get('original_prices')
+        # Fallback: deserializza dallo store Dash
+        if original_prices_data:
+            df_prices = pd.read_json(io.StringIO(original_prices_data), orient='split')
+            df_prices.index = pd.to_datetime(df_prices.index)
 
     if df_prices is None or df_prices.empty:
         return no_update, html.Div('⚠ Nessun dato disponibile — clicca prima ⟳ Aggiorna',
