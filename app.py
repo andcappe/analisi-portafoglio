@@ -102,6 +102,78 @@ def serve_profilo():
 def serve_foto():
     return flask_send_file(_FOTO_PNG, mimetype='image/png')
 
+@app.server.route('/clienti')
+def pagina_clienti():
+    from flask import Response
+    files = sorted(SESSIONS_DIR.glob('tickers_*.xlsx'))
+    righe = ''
+    for i, f in enumerate(files, 1):
+        ts_raw = f.stem.replace('tickers_', '')
+        try:
+            ts_fmt = datetime.strptime(ts_raw, '%Y%m%d_%H%M%S').strftime('%d/%m/%Y %H:%M:%S')
+        except Exception:
+            ts_fmt = ts_raw
+        try:
+            df_tmp = pd.read_excel(f)
+            n_asset = len(df_tmp)
+        except Exception:
+            n_asset = '?'
+        righe += (
+            f'<tr>'
+            f'<td style="padding:8px 16px;font-weight:700;color:#1a3a6b">#{i:03d}</td>'
+            f'<td style="padding:8px 16px">{ts_fmt}</td>'
+            f'<td style="padding:8px 16px">{n_asset} asset</td>'
+            f'<td style="padding:8px 16px">'
+            f'<a href="/clienti/download/{f.name}" '
+            f'style="color:#2554a0;font-weight:600">⬇ Scarica</a>'
+            f'</td>'
+            f'</tr>\n'
+        )
+    if not righe:
+        righe = '<tr><td colspan="4" style="padding:20px;color:#888;text-align:center">Nessun file caricato ancora.</td></tr>'
+    html = f'''<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8"/>
+  <title>File Clienti — Andrea Cappelletti</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet"/>
+  <style>
+    body{{font-family:Inter,sans-serif;background:#fff;color:#1a2a4a;margin:0;padding:40px 5%}}
+    h1{{font-size:1.6rem;color:#1a3a6b;margin-bottom:4px}}
+    p{{color:#5a7099;font-size:0.9rem;margin-bottom:2rem}}
+    table{{width:100%;border-collapse:collapse;box-shadow:0 2px 12px rgba(26,58,107,.08)}}
+    th{{background:#1a3a6b;color:#fff;padding:10px 16px;text-align:left;font-size:0.82rem;letter-spacing:.05em;text-transform:uppercase}}
+    tr:nth-child(even){{background:#f5f8fe}}
+    tr:hover{{background:#e8f0fb}}
+    a{{text-decoration:none}}
+    .back{{display:inline-block;margin-top:2rem;color:#2554a0;font-weight:600;font-size:.85rem}}
+  </style>
+</head>
+<body>
+  <h1>File Clienti Caricati</h1>
+  <p>Ogni file ticker caricato dal portale è elencato qui con data, ora e numero di asset.</p>
+  <table>
+    <thead><tr><th>#</th><th>Data/Ora</th><th>Asset</th><th>File</th></tr></thead>
+    <tbody>{righe}</tbody>
+  </table>
+  <a class="back" href="/">← Torna al sito</a>
+</body>
+</html>'''
+    return Response(html, mimetype='text/html')
+
+@app.server.route('/clienti/download/<filename>')
+def download_client_file(filename):
+    from flask import abort
+    if not filename.startswith('tickers_') or not filename.endswith('.xlsx'):
+        abort(404)
+    filepath = SESSIONS_DIR / filename
+    if not filepath.exists():
+        abort(404)
+    return flask_send_file(str(filepath),
+                           mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                           as_attachment=True,
+                           download_name=filename)
+
 @app.server.route('/test-yf')
 def test_yf():
     import json as _json
@@ -209,9 +281,7 @@ _DL_LOCK   = threading.Lock()
 
 
 def _build_ticker_list():
-    # Usa il file custom se presente, altrimenti TARBIUTH
-    xlsx = _ACTIVE_TICKERS_FILE if _ACTIVE_TICKERS_FILE.exists() else Path(_XLSX)
-    df   = pd.read_excel(xlsx)
+    df   = pd.read_excel(_XLSX)
     cols = df.columns.tolist()
     return list(df[cols[0]]), list(df[cols[1]]), list(df[cols[2]])
 
@@ -329,17 +399,15 @@ def _do_download(tickers, descrizione, valuta, start_date):
 # ─────────────────────────────────────────────────────────────────────────────
 def load_ticker_names_only():
     try:
-        xlsx      = _ACTIVE_TICKERS_FILE if _ACTIVE_TICKERS_FILE.exists() else Path(_XLSX)
-        df        = pd.read_excel(xlsx)
+        df        = pd.read_excel(_XLSX)
         col_names = df.columns.tolist()
-        if len(col_names) < 2:
+        if len(col_names) < 3:
             return [], {}
         tickers     = list(df[col_names[0]])
         descrizione = list(df[col_names[1]])
         ticker_map  = {descrizione[i]: tickers[i] for i in range(len(tickers))}
         options     = [{'label': d, 'value': d} for d in descrizione]
-        src = 'custom' if _ACTIVE_TICKERS_FILE.exists() else 'TARBIUTH'
-        print(f"✓ Nomi caricati: {len(options)} asset [{src}]")
+        print(f"✓ Nomi caricati: {len(options)} asset")
         return options, ticker_map
     except Exception as e:
         print(f"Errore lettura nomi: {e}")
@@ -1085,17 +1153,15 @@ def update_output(contents, filename):
 
             else:
                 # File lista ticker: col[0]=ticker, col[1]=descrizione, col[2]=valuta
-                # Salva il file su disco per persistenza (active_tickers.xlsx + copia timestampata)
+                # Salva il file con nome progressivo nel registro clienti
                 try:
-                    with open(_ACTIVE_TICKERS_FILE, 'wb') as fout:
-                        fout.write(decoded)
                     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
                     copy_path = SESSIONS_DIR / f'tickers_{ts}.xlsx'
                     with open(copy_path, 'wb') as fout:
                         fout.write(decoded)
-                    print(f"✓ File ticker salvato: {copy_path.name}")
+                    print(f"✓ File cliente salvato: {copy_path.name}")
                 except Exception as e:
-                    print(f"⚠ Salvataggio file ticker fallito: {e}")
+                    print(f"⚠ Salvataggio file cliente fallito: {e}")
 
                 tickers     = list(df[col_names[0]])
                 descrizione = (list(df[col_names[1]]) if len(col_names) > 1
@@ -1156,10 +1222,9 @@ def render_tab1(options_tickers):
     Output('modal-status-text',       'style',       allow_duplicate=True),
     Input('refresh-data-btn', 'n_clicks'),
     State('dr-start-tab1',    'date'),
-    State('custom-tickers-store', 'data'),
     prevent_initial_call=True,
 )
-def start_refresh(n_clicks, start_date_picker, custom_tickers):
+def start_refresh(n_clicks, start_date_picker):
     if not n_clicks:
         raise PreventUpdate
 
@@ -1178,12 +1243,8 @@ def start_refresh(n_clicks, start_date_picker, custom_tickers):
     ).strftime('%Y-%m-%d')
 
     try:
-        if custom_tickers:
-            tickers = custom_tickers['tickers']
-            descr   = custom_tickers['descr']
-            valuta  = custom_tickers['valuta']
-        else:
-            tickers, descr, valuta = _build_ticker_list()
+        # Aggiorna sempre con TARBIUTH (ripristina il dataset di default)
+        tickers, descr, valuta = _build_ticker_list()
     except Exception as e:
         err_fill = {**_FILL_LOADING, 'width': '100%', 'background': '#c0392b'}
         return (no_update, no_update, False, _MODAL_SHOWN, err_fill,
@@ -1191,9 +1252,9 @@ def start_refresh(n_clicks, start_date_picker, custom_tickers):
 
     threading.Thread(target=_do_download,
                      args=(tickers, descr, valuta, start_date), daemon=True).start()
-    print(f"▶ Aggiornamento manuale: {len(tickers)} ticker da {start_date}")
+    print(f"▶ Aggiornamento TARBIUTH: {len(tickers)} ticker da {start_date}")
     return (False, 0, True, _MODAL_SHOWN, _FILL_LOADING,
-            f'Avvio — {len(tickers)} asset da {start_date}…', '', _STATUS_GREY)
+            f'Ripristino TARBIUTH — {len(tickers)} asset…', '', _STATUS_GREY)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
