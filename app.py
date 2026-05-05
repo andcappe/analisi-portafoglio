@@ -85,6 +85,8 @@ app.index_string = '''
 _XLSX        = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'TARBIUTH.xlsx')
 _PROFILO_HTML = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                               'profilo.html'))
+_FOTO_PNG = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                          'assets', 'foto.png'))
 
 # Rotta Flask per servire la pagina profilo
 @app.server.route('/health')
@@ -95,6 +97,10 @@ def health_check():
 @app.server.route('/sito')
 def serve_profilo():
     return flask_send_file(_PROFILO_HTML)
+
+@app.server.route('/foto.png')
+def serve_foto():
+    return flask_send_file(_FOTO_PNG, mimetype='image/png')
 
 @app.server.route('/test-yf')
 def test_yf():

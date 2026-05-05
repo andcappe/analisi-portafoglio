@@ -20,7 +20,7 @@
       --fineco:  #f37021;
       --white:   #ffffff;
       --bg:      #ffffff;
-      --bg2:     #f5f8fe;
+      --bg2:     #ffffff;
       --text:    #1a2a4a;
       --muted:   #5a7099;
       --border:  #ccd9ee;
@@ -94,7 +94,7 @@
       min-height: 100vh;
       display: flex; align-items: center;
       padding: 64px 4% 0;
-      background: linear-gradient(150deg, #ffffff 0%, #eef4ff 50%, #dce9fa 100%);
+      background: #ffffff;
       position: relative; overflow: hidden;
     }
     #home::before {
@@ -203,7 +203,7 @@
       border-radius: 14px;
       border: 2px solid var(--border);
       overflow: hidden;
-      background: var(--blue-lt);
+      background: #ffffff;
       display: flex; align-items: center; justify-content: center;
       box-shadow: var(--shadow);
     }
@@ -215,7 +215,7 @@
     .hero-photo-placeholder span { font-size: 0.7rem; text-align: center; padding: 0 16px; line-height: 1.5; }
 
     /* ─── Sections ──────────────────────────────────────────────── */
-    section { padding: 90px 5%; }
+    section { padding: 90px 5%; border-top: 1px solid var(--border); }
     .section-inner { max-width: 1200px; margin: 0 auto; }
     .section-tag {
       display: inline-block;
@@ -593,11 +593,7 @@
       </div>
       <div>
         <div class="hero-photo-frame">
-          <!-- ✏️ Sostituisci con: <img src="foto.jpg" alt="Andrea Cappelletti" /> -->
-          <div class="hero-photo-placeholder">
-            <i class="fa-regular fa-user"></i>
-            <span>Inserisci qui la tua<br>foto professionale<br>(foto.jpg)</span>
-          </div>
+          <img src="foto.png" alt="Andrea Cappelletti" />
         </div>
       </div>
     </div>
