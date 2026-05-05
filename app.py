@@ -894,8 +894,9 @@ app.layout = html.Div([
                    'color': '#555', 'cursor': 'pointer'},
             multiple=False,
         ),
-        # 4. Salva
-        html.Button('💾 Salva', id='save-data-button', n_clicks=0,
+        # 4. Scarica prezzi
+        html.Button('📥 Scarica', id='save-data-button', n_clicks=0,
+                    title='Scarica i prezzi correnti come file Excel (date + prezzi per asset)',
                     style={'font-size': '11px', 'padding': '5px 12px',
                            'border-radius': '4px', 'cursor': 'pointer',
                            'background': '#f0f4fb', 'border': '1px solid #c0d0e8',
@@ -1023,20 +1024,59 @@ def update_output(contents, filename):
     elif triggered_id == 'upload-data' and contents is not None:
         try:
             _, content_string = contents.split(',')
-            decoded     = base64.b64decode(content_string)
-            df          = pd.read_excel(io.BytesIO(decoded))
-            col_names   = df.columns.tolist()
-            tickers     = list(df[col_names[0]])
-            descrizione = list(df[col_names[1]])
-            valuta      = list(df[col_names[2]])
-            ticker_map  = {descrizione[i]: tickers[i] for i in range(len(tickers))}
-            options     = [{'label': d, 'value': d} for d in descrizione]
-            custom      = {'tickers': tickers, 'descr': descrizione, 'valuta': valuta}
-            return (
-                html.Div(f'✓ {len(options)} asset caricati — clicca ⟳ Aggiorna per scaricare i prezzi',
-                         style={'color': '#007755', 'font-size': '11px'}),
-                options, None, None, [], ticker_map, '', custom,
-            )
+            decoded   = base64.b64decode(content_string)
+            df        = pd.read_excel(io.BytesIO(decoded))
+            col_names = df.columns.tolist()
+
+            # Detect format: price file = first col parseable as dates + rest numeric
+            is_price_file = False
+            try:
+                pd.to_datetime(df[col_names[0]], errors='raise')
+                num_cols = df.drop(columns=[col_names[0]]).select_dtypes(include='number').columns.tolist()
+                is_price_file = len(num_cols) >= 1
+            except Exception:
+                pass
+
+            if is_price_file:
+                # File con date + prezzi: carica direttamente, nessun download Yahoo necessario
+                df_prices = df.set_index(col_names[0])
+                df_prices.index = pd.to_datetime(df_prices.index)
+                df_prices = df_prices.select_dtypes(include='number').ffill().dropna(how='all')
+                close_returns = df_prices.pct_change(fill_method=None)
+                options    = [{'label': c, 'value': c} for c in df_prices.columns]
+                ticker_map = {c: c for c in df_prices.columns}
+                saved_at   = datetime.now().strftime('%d/%m/%Y %H:%M')
+                with _DL_LOCK:
+                    _DL_BUFFER.update({
+                        'date': datetime.now().strftime('%Y-%m-%d'),
+                        'saved_at': saved_at,
+                        'close_returns': close_returns,
+                        'original_prices': df_prices,
+                        'ticker_map': ticker_map,
+                    })
+                return (
+                    html.Div(f'✓ {len(options)} asset — prezzi caricati dal file (nessun download necessario)',
+                             style={'color': '#007755', 'font-size': '11px'}),
+                    options,
+                    close_returns.to_json(date_format='iso', orient='split'),
+                    df_prices.to_json(date_format='iso', orient='split'),
+                    [], ticker_map, f"Caricati: {saved_at}", None,
+                )
+            else:
+                # File lista ticker: col[0]=ticker, col[1]=descrizione, col[2]=valuta
+                tickers     = list(df[col_names[0]])
+                descrizione = (list(df[col_names[1]]) if len(col_names) > 1
+                               else [str(t) for t in tickers])
+                valuta      = (list(df[col_names[2]]) if len(col_names) > 2
+                               else ['EUR'] * len(tickers))
+                ticker_map  = {descrizione[i]: tickers[i] for i in range(len(tickers))}
+                options     = [{'label': d, 'value': d} for d in descrizione]
+                custom      = {'tickers': tickers, 'descr': descrizione, 'valuta': valuta}
+                return (
+                    html.Div(f'✓ {len(options)} asset caricati — clicca ⟳ Aggiorna per scaricare i prezzi',
+                             style={'color': '#007755', 'font-size': '11px'}),
+                    options, None, None, [], ticker_map, '', custom,
+                )
         except Exception as e:
             return html.Div(f'Errore: {e}'), [], None, None, [], {}, '', None
 
