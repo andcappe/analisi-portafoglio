@@ -9,7 +9,9 @@ import base64
 import time
 import threading
 import os
+import hmac
 import uuid
+from functools import wraps
 import pickle
 import requests
 from pathlib import Path
@@ -24,6 +26,7 @@ from plotly.subplots import make_subplots
 from dash import Dash, html, dcc, Input, Output, State, ALL, callback_context, no_update
 from dash.exceptions import PreventUpdate
 from flask import send_file as flask_send_file
+from flask import request as flask_request, Response as FlaskResponse
 
 # ─────────────────────────────────────────────────────────────────────────────
 # App
@@ -88,6 +91,31 @@ _PROFILO_HTML = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__f
 _FOTO_PNG = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                           'assets', 'foto.png'))
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Autenticazione per le pagine riservate (/clienti, /test-yf)
+# Credenziali da variabili d'ambiente CLIENTI_USER e CLIENTI_PASSWORD.
+# Se non sono impostate le pagine restano bloccate (fail-closed).
+# ─────────────────────────────────────────────────────────────────────────────
+def _richiede_login(view):
+    @wraps(view)
+    def _wrapped(*args, **kwargs):
+        user_ok = os.environ.get('CLIENTI_USER', '')
+        pass_ok = os.environ.get('CLIENTI_PASSWORD', '')
+        if not user_ok or not pass_ok:
+            return FlaskResponse('Area riservata non configurata.', 503,
+                                 mimetype='text/plain')
+        auth = flask_request.authorization
+        if (auth is not None
+                and hmac.compare_digest((auth.username or '').encode(), user_ok.encode())
+                and hmac.compare_digest((auth.password or '').encode(), pass_ok.encode())):
+            resp = app.server.make_response(view(*args, **kwargs))
+            resp.headers['Cache-Control'] = 'no-store'
+            return resp
+        return FlaskResponse('Accesso riservato.', 401,
+                             {'WWW-Authenticate': 'Basic realm="Area clienti", charset="UTF-8"'},
+                             mimetype='text/plain')
+    return _wrapped
+
 # Rotta Flask per servire la pagina profilo
 @app.server.route('/health')
 def health_check():
@@ -103,6 +131,7 @@ def serve_foto():
     return flask_send_file(_FOTO_PNG, mimetype='image/png')
 
 @app.server.route('/clienti')
+@_richiede_login
 def pagina_clienti():
     from flask import Response
     files = sorted(SESSIONS_DIR.glob('tickers_*.xlsx'))
@@ -162,6 +191,7 @@ def pagina_clienti():
     return Response(html, mimetype='text/html')
 
 @app.server.route('/clienti/download/<filename>')
+@_richiede_login
 def download_client_file(filename):
     from flask import abort
     if not filename.startswith('tickers_') or not filename.endswith('.xlsx'):
@@ -175,6 +205,7 @@ def download_client_file(filename):
                            download_name=filename)
 
 @app.server.route('/test-yf')
+@_richiede_login
 def test_yf():
     import json as _json
     done = threading.Event()
