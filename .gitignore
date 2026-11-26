@@ -7,3 +7,6 @@ venv/
 sessions/*.json
 ~$*
 .DS_Store
+sessions/*.pkl
+sessions/*.xlsx
+sessions/*.tmp
