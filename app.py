@@ -25,6 +25,8 @@ from dash import Dash, html, dcc, Input, Output, State, ALL, callback_context, n
 from dash.exceptions import PreventUpdate
 from flask import send_file as flask_send_file
 
+from storage import storage
+
 # ─────────────────────────────────────────────────────────────────────────────
 # App
 # ─────────────────────────────────────────────────────────────────────────────
@@ -105,16 +107,16 @@ def serve_foto():
 @app.server.route('/clienti')
 def pagina_clienti():
     from flask import Response
-    files = sorted(SESSIONS_DIR.glob('tickers_*.xlsx'))
+    files = [n for n in storage.list('tickers_') if n.endswith('.xlsx')]
     righe = ''
-    for i, f in enumerate(files, 1):
-        ts_raw = f.stem.replace('tickers_', '')
+    for i, fname in enumerate(files, 1):
+        ts_raw = fname[len('tickers_'):-len('.xlsx')]
         try:
             ts_fmt = datetime.strptime(ts_raw, '%Y%m%d_%H%M%S').strftime('%d/%m/%Y %H:%M:%S')
         except Exception:
             ts_fmt = ts_raw
         try:
-            df_tmp = pd.read_excel(f)
+            df_tmp = pd.read_excel(io.BytesIO(storage.read(fname)))
             n_asset = len(df_tmp)
         except Exception:
             n_asset = '?'
@@ -124,7 +126,7 @@ def pagina_clienti():
             f'<td style="padding:8px 16px">{ts_fmt}</td>'
             f'<td style="padding:8px 16px">{n_asset} asset</td>'
             f'<td style="padding:8px 16px">'
-            f'<a href="/clienti/download/{f.name}" '
+            f'<a href="/clienti/download/{fname}" '
             f'style="color:#2554a0;font-weight:600">⬇ Scarica</a>'
             f'</td>'
             f'</tr>\n'
@@ -166,10 +168,12 @@ def download_client_file(filename):
     from flask import abort
     if not filename.startswith('tickers_') or not filename.endswith('.xlsx'):
         abort(404)
-    filepath = SESSIONS_DIR / filename
-    if not filepath.exists():
+    if '/' in filename or '\\' in filename:
         abort(404)
-    return flask_send_file(str(filepath),
+    content = storage.read(filename)
+    if content is None:
+        abort(404)
+    return flask_send_file(io.BytesIO(content),
                            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                            as_attachment=True,
                            download_name=filename)
@@ -382,8 +386,7 @@ def _do_download(tickers, descrizione, valuta, start_date):
         'close_returns':   close_returns,
     }
     try:
-        with open(_MARKET_DATA_FILE, 'wb') as f:
-            pickle.dump(data, f)
+        storage.write(_MARKET_DATA_FILE, pickle.dumps(data))
         print(f"✓ market_data.pkl salvato — {len(all_prices)} asset — {saved_at}")
     except Exception as e:
         print(f"⚠ Salvataggio su disco fallito: {e}")
@@ -417,11 +420,10 @@ def load_ticker_names_only():
 # ─────────────────────────────────────────────────────────────────────────────
 # Gestione sessioni
 # ─────────────────────────────────────────────────────────────────────────────
-SESSIONS_DIR = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sessions'))
-SESSIONS_DIR.mkdir(exist_ok=True)
-_INDEX_FILE          = SESSIONS_DIR / 'index.json'
-_MARKET_DATA_FILE    = SESSIONS_DIR / 'market_data.pkl'
-_ACTIVE_TICKERS_FILE = SESSIONS_DIR / 'active_tickers.xlsx'
+# I file sono salvati tramite storage.py (bucket S3/R2 se configurato,
+# altrimenti cartella locale sessions/). Qui ci sono solo i nomi.
+_INDEX_FILE          = 'index.json'
+_MARKET_DATA_FILE    = 'market_data.pkl'
 
 CLIENT_SESSION_STORES = [
     "weights-store-P1",
@@ -437,15 +439,16 @@ CLIENT_SESSION_STORES = [
 
 
 def _read_index():
-    if not _INDEX_FILE.exists():
-        return []
     try:
-        return json.loads(_INDEX_FILE.read_text(encoding='utf-8'))
-    except Exception:
+        raw = storage.read(_INDEX_FILE)
+        return json.loads(raw.decode('utf-8')) if raw else []
+    except Exception as e:
+        print(f"⚠ Lettura indice sessioni fallita: {e}")
         return []
 
 def _write_index(records):
-    _INDEX_FILE.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding='utf-8')
+    storage.write(_INDEX_FILE,
+                  json.dumps(records, ensure_ascii=False, indent=2).encode('utf-8'))
 
 def list_sessions():
     records = _read_index()
@@ -456,7 +459,7 @@ def save_session(name, description, store_data):
     now  = datetime.now().isoformat(timespec='seconds')
     data = json.dumps(store_data, ensure_ascii=False)
     size_kb = round(len(data.encode()) / 1024, 1)
-    (SESSIONS_DIR / f'{sid}.json').write_text(data, encoding='utf-8')
+    storage.write(f'{sid}.json', data.encode('utf-8'))
     rec = {'id': sid, 'name': name or sid, 'description': description,
            'size_kb': size_kb, 'created_at': now, 'updated_at': now}
     records = _read_index()
@@ -465,18 +468,18 @@ def save_session(name, description, store_data):
     return rec
 
 def load_session(session_id):
-    f = SESSIONS_DIR / f'{session_id}.json'
-    if not f.exists():
-        return {}
     try:
-        return json.loads(f.read_text(encoding='utf-8'))
-    except Exception:
+        raw = storage.read(f'{session_id}.json')
+        return json.loads(raw.decode('utf-8')) if raw else {}
+    except Exception as e:
+        print(f"⚠ Lettura sessione {session_id} fallita: {e}")
         return {}
 
 def delete_session(session_id):
-    f = SESSIONS_DIR / f'{session_id}.json'
-    if f.exists():
-        f.unlink()
+    try:
+        storage.delete(f'{session_id}.json')
+    except Exception as e:
+        print(f"⚠ Cancellazione sessione {session_id} fallita: {e}")
     records = [r for r in _read_index() if r['id'] != session_id]
     _write_index(records)
 
@@ -1156,10 +1159,9 @@ def update_output(contents, filename):
                 # Salva il file con nome progressivo nel registro clienti
                 try:
                     ts = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    copy_path = SESSIONS_DIR / f'tickers_{ts}.xlsx'
-                    with open(copy_path, 'wb') as fout:
-                        fout.write(decoded)
-                    print(f"✓ File cliente salvato: {copy_path.name}")
+                    copy_name = f'tickers_{ts}.xlsx'
+                    storage.write(copy_name, decoded)
+                    print(f"✓ File cliente salvato: {copy_name}")
                 except Exception as e:
                     print(f"⚠ Salvataggio file cliente fallito: {e}")
 
@@ -2457,16 +2459,20 @@ def load_session_cb(session_id):
 # ─────────────────────────────────────────────────────────────────────────────
 def _startup_load():
     global _DL_STATE, _DL_BUFFER
-    if _MARKET_DATA_FILE.exists():
+    try:
+        raw = storage.read(_MARKET_DATA_FILE)
+    except Exception as e:
+        raw = None
+        print(f"⚠ Lettura market_data.pkl dallo storage fallita: {e}")
+    if raw:
         try:
-            with open(_MARKET_DATA_FILE, 'rb') as f:
-                data = pickle.load(f)
+            data = pickle.loads(raw)
             with _DL_LOCK:
                 _DL_BUFFER.update(data)
                 _DL_STATE['status']  = 'done'
                 _DL_STATE['current'] = 1
                 _DL_STATE['total']   = 1
-            print(f"✓ Dati caricati da disco — {data.get('saved_at', '?')}")
+            print(f"✓ Dati caricati dallo storage — {data.get('saved_at', '?')}")
             return
         except Exception as e:
             print(f"⚠ Lettura market_data.pkl fallita: {e}")
